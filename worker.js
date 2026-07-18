@@ -1,5 +1,5 @@
 /**
- * My Grafix Forms + Uploads Engine
+ * My Grafix Forms + Uploads Engines
  * A single, multi-tenant Cloudflare Worker that:
  *  - accepts form submissions (contact/quote/booking/reservation) for
  *    unlimited clients and writes them to Supabase
@@ -109,6 +109,10 @@ export default {
       const exportMatch = url.pathname.match(/^\/api\/export\/([a-z_]+)$/);
       if (request.method === "GET" && exportMatch) {
         return await handleExport(request, env, exportMatch[1]);
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/search") {
+        return await handleSearch(request, env);
       }
 
       if (request.method === "POST" && url.pathname === "/api/upload") {
@@ -1303,6 +1307,35 @@ function arrayBufferToBase64(bytes) {
     binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
   }
   return btoa(binary);
+}
+
+// ==================================================
+// GLOBAL SEARCH (authenticated — dashboard-triggered)
+// ==================================================
+
+async function handleSearch(request, env) {
+  const claims = await verifySupabaseJwt(request, env);
+  if (!claims) return jsonResponse({ success: false, error: "Unauthorized." }, 401);
+
+  const clientId = await resolveClientId(env, claims.sub);
+  if (!clientId) {
+    return jsonResponse({ success: false, error: "No client account linked to this login." }, 403);
+  }
+
+  const url = new URL(request.url);
+  const q = (url.searchParams.get("q") || "").trim();
+
+  if (q.length < 2) {
+    return jsonResponse({ success: false, error: "Search query must be at least 2 characters." }, 400);
+  }
+
+  const results = await supabaseFetch(env, "rpc/search_all", {
+    method: "POST",
+    prefer: "return=representation",
+    body: JSON.stringify({ p_client_id: clientId, q }),
+  });
+
+  return jsonResponse({ success: true, query: q, results });
 }
 
 // ==================================================
