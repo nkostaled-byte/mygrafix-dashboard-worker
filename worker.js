@@ -1407,11 +1407,15 @@ async function checkRateLimit(env, key, { max, windowSeconds }) {
 
   record.count += 1;
 
-  const ttl = Math.max(1, Math.ceil((record.resetAt - now) / 1000));
-  await env.RATE_LIMIT_KV.put(key, JSON.stringify(record), { expirationTtl: ttl });
+  const secondsUntilReset = Math.max(1, Math.ceil((record.resetAt - now) / 1000));
+  // Cloudflare KV requires expirationTtl >= 60, even if the rate-limit
+  // window itself is shorter — this is a storage constraint, unrelated
+  // to how long the limit should actually apply for.
+  const kvTtl = Math.max(60, secondsUntilReset);
+  await env.RATE_LIMIT_KV.put(key, JSON.stringify(record), { expirationTtl: kvTtl });
 
   if (record.count > max) {
-    return { allowed: false, retryAfter: ttl };
+    return { allowed: false, retryAfter: secondsUntilReset };
   }
 
   return { allowed: true, retryAfter: 0 };
