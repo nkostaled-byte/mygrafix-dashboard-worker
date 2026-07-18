@@ -1,5 +1,5 @@
 /**
- * My Grafix Forms + Uploads Engines
+ * My Grafix Forms + Uploads Engine
  * A single, multi-tenant Cloudflare Worker that:
  *  - accepts form submissions (contact/quote/booking/reservation) for
  *    unlimited clients and writes them to Supabase
@@ -109,6 +109,10 @@ export default {
       const exportMatch = url.pathname.match(/^\/api\/export\/([a-z_]+)$/);
       if (request.method === "GET" && exportMatch) {
         return await handleExport(request, env, exportMatch[1]);
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/claim-account") {
+        return await handleClaimAccount(request, env);
       }
 
       if (request.method === "GET" && url.pathname === "/api/search") {
@@ -1307,6 +1311,71 @@ function arrayBufferToBase64(bytes) {
     binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
   }
   return btoa(binary);
+}
+
+// ==================================================
+// ACCOUNT CLAIMING (called once, right after signup)
+// ==================================================
+
+/**
+ * Called immediately after a user completes Supabase Auth signup.
+ * Three possible outcomes:
+ *  1. Already linked (re-called on a later login by mistake) — no-op.
+ *  2. A `clients` row already exists for this email (created when the
+ *     agency built their site) but has no auth_user_id yet — link it.
+ *  3. No matching row at all — this is a brand new self-service
+ *     signup with no pre-existing website — create a fresh client.
+ */
+async function handleClaimAccount(request, env) {
+  const claims = await verifySupabaseJwt(request, env);
+  if (!claims) return jsonResponse({ success: false, error: "Unauthorized." }, 401);
+  if (!claims.email) return jsonResponse({ success: false, error: "Token has no email claim." }, 400);
+
+  const authUserId = claims.sub;
+  const email = claims.email.toLowerCase();
+
+  // 1. Already linked?
+  const alreadyLinked = await supabaseFetch(
+    env,
+    `clients?auth_user_id=eq.${encodeURIComponent(authUserId)}&select=client_id,business_name`
+  );
+  if (alreadyLinked.length) {
+    return jsonResponse({ success: true, status: "already_linked", client: alreadyLinked[0] });
+  }
+
+  // 2. Pre-existing client row waiting to be claimed (case-insensitive
+  // email match, not yet linked to any login)?
+  const unclaimed = await supabaseFetch(
+    env,
+    `clients?owner_email=ilike.${encodeURIComponent(email)}&auth_user_id=is.null&select=client_id,business_name`
+  );
+  if (unclaimed.length) {
+    const client = unclaimed[0];
+    await supabaseFetch(env, `clients?client_id=eq.${encodeURIComponent(client.client_id)}`, {
+      method: "PATCH",
+      prefer: "return=minimal",
+      body: JSON.stringify({ auth_user_id: authUserId }),
+    });
+    return jsonResponse({ success: true, status: "linked", client });
+  }
+
+  // 3. No existing record — brand new self-service business.
+  const payload = await parseJsonBody(request);
+  const businessName = payload?.businessName || "My Business";
+  const clientId = generateReference("CLI").toLowerCase();
+
+  const [created] = await supabaseFetch(env, "clients", {
+    method: "POST",
+    body: JSON.stringify({
+      client_id: clientId,
+      auth_user_id: authUserId,
+      business_name: businessName,
+      owner_email: email,
+      active: true,
+    }),
+  });
+
+  return jsonResponse({ success: true, status: "created", client: created });
 }
 
 // ==================================================
