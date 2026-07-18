@@ -1,0 +1,11 @@
+{
+  "name": "my-grafix-forms-engine",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "pdf-lib": "^1.17.1"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

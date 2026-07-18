@@ -1,0 +1,35 @@
+{
+  "name": "my-grafix-forms-engine",
+  "main": "worker.js",
+  "compatibility_date": "2026-07-18",
+
+  // R2 bucket for uploaded files (logos, profile pics, product images)
+  // and generated invoice PDFs. Create the bucket first with:
+  //   wrangler r2 bucket create my-grafix-uploads
+  // (rename bucket_name below to match whatever you actually create)
+  "r2_buckets": [
+    {
+      "binding": "R2_BUCKET",
+      "bucket_name": "my-grafix-uploads"
+    }
+  ],
+
+  // Optional — rate limiting degrades gracefully if this isn't bound,
+  // but it's cheap and worth having. Create with:
+  //   wrangler kv namespace create RATE_LIMIT_KV
+  // then paste the returned id below.
+  "kv_namespaces": [
+    {
+      "binding": "RATE_LIMIT_KV",
+      "id": "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+    }
+  ]
+
+  // Secrets are intentionally NOT listed here — never commit these.
+  // Set them in the dashboard (Settings > Variables and Secrets) or via:
+  //   wrangler secret put SUPABASE_URL
+  //   wrangler secret put SUPABASE_SERVICE_ROLE_KEY
+  //   wrangler secret put SUPABASE_JWT_SECRET
+  //   wrangler secret put R2_PUBLIC_URL
+  //   wrangler secret put RESEND_API_KEY
+}
