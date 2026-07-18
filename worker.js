@@ -115,6 +115,10 @@ export default {
         return await handleClaimAccount(request, env);
       }
 
+      if (request.method === "POST" && url.pathname === "/api/claim-account/relink") {
+        return await handleRelinkAccount(request, env);
+      }
+
       if (request.method === "GET" && url.pathname === "/api/search") {
         return await handleSearch(request, env);
       }
@@ -1376,6 +1380,104 @@ async function handleClaimAccount(request, env) {
   });
 
   return jsonResponse({ success: true, status: "created", client: created });
+}
+
+// ==================================================
+// MANUAL RELINK (fallback — claim code, e.g. Google email mismatch)
+// ==================================================
+
+/**
+ * Lets a logged-in user manually link their account to a pre-existing
+ * business using a claim code the agency gave them, in cases where
+ * automatic email matching failed (e.g. they used Google Sign-In with a
+ * different email than the one on file).
+ *
+ * Safety: if this user's login already auto-created an empty placeholder
+ * client (the "created" branch of /api/claim-account), that placeholder
+ * gets deactivated ONLY if it's genuinely empty — no products, orders,
+ * bookings, invoices, or submissions. If it already has real data, this
+ * refuses and asks for manual support instead of silently discarding it.
+ */
+async function handleRelinkAccount(request, env) {
+  const claims = await verifySupabaseJwt(request, env);
+  if (!claims) return jsonResponse({ success: false, error: "Unauthorized." }, 401);
+
+  const payload = await parseJsonBody(request);
+  const claimCode = (payload?.claimCode || "").trim().toUpperCase();
+  if (!claimCode) {
+    return jsonResponse({ success: false, error: "Missing 'claimCode'." }, 400);
+  }
+
+  const authUserId = claims.sub;
+
+  const targets = await supabaseFetch(
+    env,
+    `clients?claim_code=eq.${encodeURIComponent(claimCode)}&select=*`
+  );
+  const target = targets[0];
+  if (!target) {
+    return jsonResponse({ success: false, error: "Invalid claim code." }, 404);
+  }
+
+  if (target.auth_user_id === authUserId) {
+    return jsonResponse({ success: true, status: "already_linked", client: target });
+  }
+
+  if (target.auth_user_id) {
+    return jsonResponse(
+      { success: false, error: "This business is already linked to another account. Contact support." },
+      409
+    );
+  }
+
+  // Does this user currently own a different (likely placeholder) client?
+  const existingOwned = await supabaseFetch(
+    env,
+    `clients?auth_user_id=eq.${encodeURIComponent(authUserId)}&select=client_id`
+  );
+
+  if (existingOwned.length && existingOwned[0].client_id !== target.client_id) {
+    const placeholderId = existingOwned[0].client_id;
+    const isEmpty = await clientHasNoData(env, placeholderId);
+
+    if (!isEmpty) {
+      return jsonResponse(
+        {
+          success: false,
+          error:
+            "Your account already has data under a different business record. This needs a manual merge — contact support rather than continuing here.",
+        },
+        409
+      );
+    }
+
+    // Safe to release the empty placeholder.
+    await supabaseFetch(env, `clients?client_id=eq.${encodeURIComponent(placeholderId)}`, {
+      method: "PATCH",
+      prefer: "return=minimal",
+      body: JSON.stringify({ auth_user_id: null, active: false }),
+    });
+  }
+
+  await supabaseFetch(env, `clients?client_id=eq.${encodeURIComponent(target.client_id)}`, {
+    method: "PATCH",
+    prefer: "return=minimal",
+    body: JSON.stringify({ auth_user_id: authUserId }),
+  });
+
+  return jsonResponse({ success: true, status: "linked", client: { ...target, auth_user_id: authUserId } });
+}
+
+async function clientHasNoData(env, clientId) {
+  const tables = ["products", "orders", "bookings", "invoices", "submissions"];
+  for (const table of tables) {
+    const rows = await supabaseFetch(
+      env,
+      `${table}?client_id=eq.${encodeURIComponent(clientId)}&select=id&limit=1`
+    );
+    if (rows.length) return false;
+  }
+  return true;
 }
 
 // ==================================================
