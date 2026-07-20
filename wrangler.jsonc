@@ -1,5 +1,5 @@
 {
-  "name": "my-grafix-forms-engine",
+  "name": "mygrafix-dashboard-worker",
   "main": "worker.js",
   "compatibility_date": "2026-07-18",
 
