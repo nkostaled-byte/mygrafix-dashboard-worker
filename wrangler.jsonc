@@ -25,7 +25,7 @@
     }
   ]
 
-  // Secrets are intentionally NOT listed here — never commit these.
+  // Secrets are intentionally NOT listed here — and never commit these.
   // Set them in the dashboard (Settings > Variables and Secrets) or via:
   //   wrangler secret put SUPABASE_URL
   //   wrangler secret put SUPABASE_SERVICE_ROLE_KEY
