@@ -111,6 +111,22 @@ export default {
         return await handleExport(request, env, exportMatch[1]);
       }
 
+      if (request.method === "GET" && url.pathname === "/api/public/site") {
+        return await handlePublicSite(url, env);
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/public/availability") {
+        return await handlePublicAvailability(url, env);
+      }
+
+      // Dashboard CRUD routes — /api/dashboard/:resource[/:id]
+      if (url.pathname.startsWith("/api/dashboard/")) {
+        if (request.method === "GET" || request.method === "POST" || request.method === "PUT" || request.method === "DELETE") {
+          return await handleDashboardRoute(request, env, url);
+        }
+        return jsonResponse({ success: false, error: "Method not allowed." }, 405);
+      }
+
       if (request.method === "POST" && url.pathname === "/api/claim-account") {
         return await handleClaimAccount(request, env);
       }
@@ -451,7 +467,331 @@ async function parseJsonBody(request) {
 }
 
 // ==================================================
-// VALIDATION
+// PUBLIC WEBSITE DATA
+// ==================================================
+
+/**
+ * Serves the public, client-scoped data required by a business website.
+ * This keeps the Supabase service key on the Worker and ensures browsers
+ * never bypass the My Grafix OS API layer.
+ */
+async function handlePublicSite(url, env) {
+  const clientId = (url.searchParams.get("clientId") || "").trim();
+  if (!clientId) {
+    return jsonResponse({ success: false, error: "Missing clientId." }, 400);
+  }
+
+  const client = await loadClient(env, clientId);
+  if (!client || !client.active) {
+    return jsonResponse({ success: false, error: "Business not found." }, 404);
+  }
+
+  const [products, services, staff, reviews] = await Promise.all([
+    supabaseFetch(env, `products?client_id=eq.${encodeURIComponent(clientId)}&is_hidden=eq.false&select=*&order=name.asc`),
+    supabaseFetch(env, `services?client_id=eq.${encodeURIComponent(clientId)}&active=eq.true&select=*&order=name.asc`),
+    supabaseFetch(env, `staff?client_id=eq.${encodeURIComponent(clientId)}&active=eq.true&select=*&order=name.asc`),
+    supabaseFetch(env, `reviews?client_id=eq.${encodeURIComponent(clientId)}&select=*&order=created_at.desc`),
+  ]);
+
+  // Only expose branding/contact fields intended for the public site.
+  const business = {
+    client_id: client.client_id,
+    business_name: client.business_name,
+    logo_url: client.logo_url || "",
+    primary_color: client.primary_color || "",
+    secondary_color: client.secondary_color || "",
+    hero_title: client.hero_title || "",
+    hero_subtitle: client.hero_subtitle || "",
+    phone: client.phone || "",
+    email: client.email || client.reply_email || "",
+    address: client.address || "",
+    opening_hours: client.opening_hours || "",
+  };
+
+  // Fetch gallery items
+  const gallery = await supabaseFetch(
+    env,
+    `gallery?client_id=eq.${encodeURIComponent(clientId)}&select=*&order=created_at.desc`
+  );
+
+  return jsonResponse({ success: true, business, products, services, staff, reviews, gallery });
+}
+
+// ==================================================
+// PUBLIC AVAILABILITY
+// ==================================================
+
+/**
+ * Returns available time slots for a given staff member on a given date.
+ * Checks existing bookings to exclude already-booked slots.
+ */
+async function handlePublicAvailability(url, env) {
+  const clientId = (url.searchParams.get("clientId") || "").trim();
+  const staffId = (url.searchParams.get("staffId") || "").trim();
+  const date = (url.searchParams.get("date") || "").trim();
+
+  if (!clientId || !staffId || !date) {
+    return jsonResponse({ success: false, error: "Missing clientId, staffId, or date." }, 400);
+  }
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return jsonResponse({ success: false, error: "Invalid date format. Use YYYY-MM-DD." }, 400);
+  }
+
+  // Fetch staff member to verify they exist and are active
+  const staffRows = await supabaseFetch(
+    env,
+    `staff?id=eq.${encodeURIComponent(staffId)}&client_id=eq.${encodeURIComponent(clientId)}&active=eq.true&select=*`
+  );
+
+  if (!staffRows || !staffRows.length) {
+    return jsonResponse({ success: false, error: "Staff member not found." }, 404);
+  }
+
+  // Generate default time slots (08:00 - 17:00, 60min intervals)
+  const allSlots = [];
+  for (let hour = 8; hour <= 17; hour++) {
+    allSlots.push(`${String(hour).padStart(2, "0")}:00`);
+  }
+
+  // Fetch existing bookings for this staff member on this date that aren't cancelled
+  const startOfDay = `${date}T00:00:00`;
+  const endOfDay = `${date}T23:59:59`;
+
+  const existingBookings = await supabaseFetch(
+    env,
+    `bookings?staff_id=eq.${encodeURIComponent(staffId)}&client_id=eq.${encodeURIComponent(clientId)}&start_time=gte.${encodeURIComponent(startOfDay)}&start_time=lte.${encodeURIComponent(endOfDay)}&status=neq.cancelled&select=start_time,end_time`
+  );
+
+  // Build a set of booked slot start times
+  const bookedSlots = new Set();
+  for (const booking of existingBookings || []) {
+    const start = new Date(booking.start_time);
+    const hours = String(start.getHours()).padStart(2, "0");
+    const mins = String(start.getMinutes()).padStart(2, "0");
+    bookedSlots.add(`${hours}:${mins}`);
+  }
+
+  // Filter out booked slots
+  const availableSlots = allSlots.filter((slot) => !bookedSlots.has(slot));
+
+  return jsonResponse({ success: true, slots: availableSlots, date, staffId });
+}
+
+// ==================================================
+// DASHBOARD CRUD — authenticated endpoints for the Grafix Business OS dashboard
+// ==================================================
+
+/**
+ * Helper: validates JWT, resolves clientId, and returns both.
+ * Returns a Response on failure (which the caller should return immediately).
+ */
+async function authenticateDashboardRequest(request, env) {
+  const claims = await verifySupabaseJwt(request, env);
+  if (!claims) return { error: jsonResponse({ success: false, error: "Unauthorized." }, 401) };
+
+  const clientId = await resolveClientId(env, claims.sub);
+  if (!clientId) return { error: jsonResponse({ success: false, error: "No client account linked to this login." }, 403) };
+
+  return { claims, clientId };
+}
+
+/**
+ * Generic handler for GET /api/dashboard/:resource
+ * Fetches rows from the given Supabase table filtered by client_id.
+ */
+async function handleDashboardList(request, env, resource) {
+  const auth = await authenticateDashboardRequest(request, env);
+  if (auth.error) return auth.error;
+  const { clientId } = auth;
+
+  const url = new URL(request.url);
+  let path = `${resource}?client_id=eq.${encodeURIComponent(clientId)}&select=*`;
+
+  // Support ordering: &order=column.desc
+  const orderBy = url.searchParams.get("order");
+  if (orderBy) path += `&order=${encodeURIComponent(orderBy)}`;
+
+  // Support limit: &limit=N
+  const limit = url.searchParams.get("limit");
+  if (limit) path += `&limit=${encodeURIComponent(limit)}`;
+
+  const rows = await supabaseFetch(env, path);
+  return jsonResponse({ success: true, data: rows || [] });
+}
+
+/**
+ * Generic handler for POST /api/dashboard/:resource
+ * Creates a new row in the given Supabase table.
+ */
+async function handleDashboardCreate(request, env, resource) {
+  const auth = await authenticateDashboardRequest(request, env);
+  if (auth.error) return auth.error;
+  const { clientId } = auth;
+
+  const payload = await parseJsonBody(request);
+  if (!payload) return jsonResponse({ success: false, error: "Invalid or missing JSON body." }, 400);
+
+  // Automatically inject client_id into the payload
+  const row = { ...payload, client_id: clientId };
+
+  const result = await supabaseFetch(env, resource, {
+    method: "POST",
+    body: JSON.stringify(row),
+  });
+
+  return jsonResponse({ success: true, data: result });
+}
+
+/**
+ * Generic handler for PUT /api/dashboard/:resource/:id
+ * Updates a row in the given Supabase table.
+ */
+async function handleDashboardUpdate(request, env, resource, id) {
+  const auth = await authenticateDashboardRequest(request, env);
+  if (auth.error) return auth.error;
+  const { clientId } = auth;
+
+  const payload = await parseJsonBody(request);
+  if (!payload) return jsonResponse({ success: false, error: "Invalid or missing JSON body." }, 400);
+
+  // Ensure the row belongs to this client
+  const existing = await supabaseFetch(
+    env,
+    `${resource}?id=eq.${encodeURIComponent(id)}&client_id=eq.${encodeURIComponent(clientId)}&select=id`
+  );
+  if (!existing || !existing.length) {
+    return jsonResponse({ success: false, error: "Resource not found." }, 404);
+  }
+
+  const result = await supabaseFetch(env, `${resource}?id=eq.${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    prefer: "return=minimal",
+    body: JSON.stringify(payload),
+  });
+
+  return jsonResponse({ success: true });
+}
+
+/**
+ * Generic handler for DELETE /api/dashboard/:resource/:id
+ * Deletes a row from the given Supabase table.
+ */
+async function handleDashboardDelete(request, env, resource, id) {
+  const auth = await authenticateDashboardRequest(request, env);
+  if (auth.error) return auth.error;
+  const { clientId } = auth;
+
+  // Ensure the row belongs to this client
+  const existing = await supabaseFetch(
+    env,
+    `${resource}?id=eq.${encodeURIComponent(id)}&client_id=eq.${encodeURIComponent(clientId)}&select=id`
+  );
+  if (!existing || !existing.length) {
+    return jsonResponse({ success: false, error: "Resource not found." }, 404);
+  }
+
+  await supabaseFetch(env, `${resource}?id=eq.${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    prefer: "return=minimal",
+  });
+
+  return jsonResponse({ success: true });
+}
+
+/**
+ * Dashboard metrics endpoint — returns aggregate counts and sales data.
+ */
+async function handleDashboardMetrics(request, env) {
+  const auth = await authenticateDashboardRequest(request, env);
+  if (auth.error) return auth.error;
+  const { clientId } = auth;
+
+  const [products, customers, bookings, orders, invoices, submissions] = await Promise.all([
+    supabaseFetch(env, `products?client_id=eq.${encodeURIComponent(clientId)}&select=id&limit=1000`),
+    supabaseFetch(env, `customers?client_id=eq.${encodeURIComponent(clientId)}&select=id&limit=1000`),
+    supabaseFetch(env, `bookings?client_id=eq.${encodeURIComponent(clientId)}&select=id,status&limit=1000`),
+    supabaseFetch(env, `orders?client_id=eq.${encodeURIComponent(clientId)}&select=id,total&limit=1000`),
+    supabaseFetch(env, `invoices?client_id=eq.${encodeURIComponent(clientId)}&select=id,total,status&limit=1000`),
+    supabaseFetch(env, `submissions?client_id=eq.${encodeURIComponent(clientId)}&select=id,status&limit=1000`),
+  ]);
+
+  const totalRevenue = (orders || []).reduce((sum, o) => sum + Number(o.total || 0), 0);
+  const pendingInvoices = (invoices || []).filter(i => i.status === "pending" || i.status === "sent" || i.status === "overdue");
+  const activeBookings = (bookings || []).filter(b => b.status === "confirmed" || b.status === "upcoming");
+  const unreadSubmissions = (submissions || []).filter(s => s.status === "received" || s.status === "new");
+
+  // Get today's bookings for the dashboard schedule view
+  const today = new Date().toISOString().split("T")[0];
+  const todayBookings = await supabaseFetch(
+    env,
+    `bookings?client_id=eq.${encodeURIComponent(clientId)}&start_time=gte.${encodeURIComponent(today + "T00:00:00")}&start_time=lte.${encodeURIComponent(today + "T23:59:59")}&select=*&order=start_time.asc`
+  );
+
+  return jsonResponse({
+    success: true,
+    metrics: {
+      totalProducts: (products || []).length,
+      totalCustomers: (customers || []).length,
+      totalBookings: (bookings || []).length,
+      activeBookings: activeBookings.length,
+      totalOrders: (orders || []).length,
+      totalRevenue,
+      pendingInvoices: pendingInvoices.length,
+      unreadSubmissions: unreadSubmissions.length,
+      todayBookings: todayBookings || [],
+    },
+  });
+}
+
+// ==================================================
+// DASHBOARD ROUTING
+// ==================================================
+
+/**
+ * Routes /api/dashboard/* requests to the appropriate handler.
+ * Supports: products, customers, bookings, orders, invoices, submissions,
+ *           services, staff, team-members
+ */
+async function handleDashboardRoute(request, env, url) {
+  // Match /api/dashboard/metrics
+  if (url.pathname === "/api/dashboard/metrics") {
+    return await handleDashboardMetrics(request, env);
+  }
+
+  // Match /api/dashboard/:resource/:id/status (for status updates on bookings/invoices/submissions)
+  const statusMatch = url.pathname.match(/^\/api\/dashboard\/([a-z_-]+)\/([0-9a-fA-F-]+)\/status$/);
+  if (statusMatch && request.method === "PUT") {
+    const [, resource, id] = statusMatch;
+    return await handleDashboardUpdate(request, env, resource, id);
+  }
+
+  // Match /api/dashboard/:resource/:id
+  const idMatch = url.pathname.match(/^\/api\/dashboard\/([a-z_-]+)\/([0-9a-fA-F-]+)$/);
+  if (idMatch) {
+    const [, resource, id] = idMatch;
+    if (request.method === "PUT") return await handleDashboardUpdate(request, env, resource, id);
+    if (request.method === "DELETE") return await handleDashboardDelete(request, env, resource, id);
+    return jsonResponse({ success: false, error: "Method not allowed." }, 405);
+  }
+
+  // Match /api/dashboard/:resource
+  const listMatch = url.pathname.match(/^\/api\/dashboard\/([a-z_-]+)$/);
+  if (listMatch) {
+    const [, resource] = listMatch;
+    // Validate resource is in the allowed list
+    const allowedResources = ["products", "customers", "bookings", "orders", "invoices", "submissions", "services", "staff", "team_members"];
+    if (!allowedResources.includes(resource)) {
+      return jsonResponse({ success: false, error: `Unknown resource: ${resource}` }, 400);
+    }
+
+    if (request.method === "GET") return await handleDashboardList(request, env, resource);
+    if (request.method === "POST") return await handleDashboardCreate(request, env, resource);
+    return jsonResponse({ success: false, error: "Method not allowed." }, 405);
+  }
+
+  return jsonResponse({ success: false, error: "Not found." }, 404);
+}
 // ==================================================
 
 function validatePayload(payload) {
