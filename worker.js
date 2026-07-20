@@ -474,6 +474,11 @@ async function parseJsonBody(request) {
  * Serves the public, client-scoped data required by a business website.
  * This keeps the Supabase service key on the Worker and ensures browsers
  * never bypass the My Grafix OS API layer.
+ *
+ * Each table query is individually wrapped in try/catch so that if a table
+ * hasn't been created yet (e.g. reviews, gallery) the endpoint still
+ * returns a successful response with empty arrays for those collections
+ * and the business info intact.
  */
 async function handlePublicSite(url, env) {
   const clientId = (url.searchParams.get("clientId") || "").trim();
@@ -486,14 +491,21 @@ async function handlePublicSite(url, env) {
     return jsonResponse({ success: false, error: "Business not found." }, 404);
   }
 
-  const [products, services, staff, reviews] = await Promise.all([
-    supabaseFetch(env, `products?client_id=eq.${encodeURIComponent(clientId)}&is_hidden=eq.false&select=*&order=name.asc`),
-    supabaseFetch(env, `services?client_id=eq.${encodeURIComponent(clientId)}&active=eq.true&select=*&order=name.asc`),
-    supabaseFetch(env, `staff?client_id=eq.${encodeURIComponent(clientId)}&active=eq.true&select=*&order=name.asc`),
-    supabaseFetch(env, `reviews?client_id=eq.${encodeURIComponent(clientId)}&select=*&order=created_at.desc`),
+  // Query each table independently — if a table doesn't exist or the
+  // query fails for any reason, we return [] instead of crashing the
+  // whole endpoint.
+  const [products, services, staff, reviews, gallery] = await Promise.all([
+    safeQuery(env, `products?client_id=eq.${encodeURIComponent(clientId)}&is_hidden=eq.false&select=*&order=name.asc`),
+    safeQuery(env, `services?client_id=eq.${encodeURIComponent(clientId)}&active=eq.true&select=*&order=name.asc`),
+    safeQuery(env, `staff?client_id=eq.${encodeURIComponent(clientId)}&active=eq.true&select=*&order=name.asc`),
+    safeQuery(env, `reviews?client_id=eq.${encodeURIComponent(clientId)}&select=*&order=created_at.desc`),
+    safeQuery(env, `gallery?client_id=eq.${encodeURIComponent(clientId)}&select=*&order=created_at.desc`),
   ]);
 
-  // Only expose branding/contact fields intended for the public site.
+  // Build the business object from the client's actual schema columns.
+  // Fields the frontend expects but which aren't in the database schema
+  // (e.g. hero_title, phone, address) default to empty strings so the
+  // site can render its own hardcoded defaults.
   const business = {
     client_id: client.client_id,
     business_name: client.business_name,
@@ -503,18 +515,39 @@ async function handlePublicSite(url, env) {
     hero_title: client.hero_title || "",
     hero_subtitle: client.hero_subtitle || "",
     phone: client.phone || "",
-    email: client.email || client.reply_email || "",
+    email: client.owner_email || "",  // schema has owner_email, not email
+    owner_email: client.owner_email || "",
     address: client.address || "",
     opening_hours: client.opening_hours || "",
+    active: client.active,
+    business_type: client.business_type || "general",
   };
 
-  // Fetch gallery items
-  const gallery = await supabaseFetch(
-    env,
-    `gallery?client_id=eq.${encodeURIComponent(clientId)}&select=*&order=created_at.desc`
-  );
+  // Normalise staff rows: the actual DB column is `full_name` but the
+  // frontend mapper reads `row.name`, so we remap here so the public
+  // API contract is consistent.
+  const normalisedStaff = (staff || []).map((s) => ({
+    ...s,
+    name: s.full_name || s.name || "",
+  }));
 
-  return jsonResponse({ success: true, business, products, services, staff, reviews, gallery });
+  return jsonResponse({ success: true, business, products, services, staff: normalisedStaff, reviews, gallery });
+}
+
+/**
+ * Thin wrapper around supabaseFetch that returns [] instead of throwing
+ * on any error (missing table, network blip, etc.). This keeps the
+ * public site endpoint resilient — missing tables never block the
+ * business info from loading.
+ */
+async function safeQuery(env, path) {
+  try {
+    const result = await supabaseFetch(env, path);
+    return result || [];
+  } catch (err) {
+    console.error(`safeQuery failed for ${path}:`, err);
+    return [];
+  }
 }
 
 // ==================================================
