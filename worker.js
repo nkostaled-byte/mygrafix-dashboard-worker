@@ -27,7 +27,7 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
@@ -744,7 +744,7 @@ async function handleDashboardMetrics(request, env) {
     supabaseFetch(env, `products?client_id=eq.${encodeURIComponent(clientId)}&select=id&limit=1000`),
     supabaseFetch(env, `customers?client_id=eq.${encodeURIComponent(clientId)}&select=id&limit=1000`),
     supabaseFetch(env, `bookings?client_id=eq.${encodeURIComponent(clientId)}&select=id,status&limit=1000`),
-    supabaseFetch(env, `orders?client_id=eq.${encodeURIComponent(clientId)}&select=id,total&limit=1000`),
+    supabaseFetch(env, `orders?client_id=eq.${encodeURIComponent(clientId)}&select=id,total,created_at&limit=1000`),
     supabaseFetch(env, `invoices?client_id=eq.${encodeURIComponent(clientId)}&select=id,total,status&limit=1000`),
     supabaseFetch(env, `submissions?client_id=eq.${encodeURIComponent(clientId)}&select=id,status&limit=1000`),
   ]);
@@ -761,20 +761,74 @@ async function handleDashboardMetrics(request, env) {
     `bookings?client_id=eq.${encodeURIComponent(clientId)}&start_time=gte.${encodeURIComponent(today + "T00:00:00")}&start_time=lte.${encodeURIComponent(today + "T23:59:59")}&select=*&order=start_time.asc`
   );
 
-  return jsonResponse({
-    success: true,
-    metrics: {
-      totalProducts: (products || []).length,
-      totalCustomers: (customers || []).length,
-      totalBookings: (bookings || []).length,
-      activeBookings: activeBookings.length,
-      totalOrders: (orders || []).length,
-      totalRevenue,
-      pendingInvoices: pendingInvoices.length,
-      unreadSubmissions: unreadSubmissions.length,
-      todayBookings: todayBookings || [],
-    },
-  });
+  const metrics = {
+    totalProducts: (products || []).length,
+    totalCustomers: (customers || []).length,
+    totalBookings: (bookings || []).length,
+    activeBookings: activeBookings.length,
+    totalOrders: (orders || []).length,
+    totalRevenue,
+    pendingInvoices: pendingInvoices.length,
+    unreadSubmissions: unreadSubmissions.length,
+    todayBookings: todayBookings || [],
+    daily_sales: buildDailySales(orders || []),
+    monthly_revenue: buildMonthlyRevenue(orders || []),
+  };
+
+  return jsonResponse({ success: true, data: metrics });
+}
+
+function formatDateYmd(date) {
+  return date.toISOString().split("T")[0];
+}
+
+function buildDailySales(orders) {
+  const buckets = new Map();
+  const today = new Date();
+
+  // Seed the last 30 days with zeroes so the chart always has a full window.
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date(today);
+    d.setUTCDate(today.getUTCDate() - i);
+    const key = formatDateYmd(d);
+    buckets.set(key, { date: key, revenue: 0, orders: 0 });
+  }
+
+  for (const order of orders) {
+    if (!order.created_at) continue;
+    const key = formatDateYmd(new Date(order.created_at));
+    if (buckets.has(key)) {
+      const bucket = buckets.get(key);
+      bucket.revenue += Number(order.total || 0);
+      bucket.orders += 1;
+    }
+  }
+
+  return Array.from(buckets.values());
+}
+
+function buildMonthlyRevenue(orders) {
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const buckets = new Map();
+  const today = new Date();
+
+  // Seed the last 12 months with zeroes.
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - i, 1));
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+    buckets.set(key, { month: months[d.getUTCMonth()], revenue: 0, yearMonth: key });
+  }
+
+  for (const order of orders) {
+    if (!order.created_at) continue;
+    const d = new Date(order.created_at);
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+    if (buckets.has(key)) {
+      buckets.get(key).revenue += Number(order.total || 0);
+    }
+  }
+
+  return Array.from(buckets.values());
 }
 
 // ==================================================
