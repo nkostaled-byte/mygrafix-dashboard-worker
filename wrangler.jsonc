@@ -33,3 +33,4 @@
   //   wrangler secret put R2_PUBLIC_URL
   //   wrangler secret put RESEND_API_KEY
 }
+
