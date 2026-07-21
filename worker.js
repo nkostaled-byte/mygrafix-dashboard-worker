@@ -482,11 +482,13 @@ async function parseJsonBody(request) {
  */
 async function handlePublicSite(url, env) {
   const clientId = (url.searchParams.get("clientId") || "").trim();
+  console.error('handlePublicSite called with clientId:', clientId);
   if (!clientId) {
     return jsonResponse({ success: false, error: "Missing clientId." }, 400);
   }
 
   const client = await loadClient(env, clientId);
+  console.error('handlePublicSite loadClient returned:', client);
   if (!client || !client.active) {
     return jsonResponse({ success: false, error: "Business not found." }, 404);
   }
@@ -980,10 +982,14 @@ async function supabaseFetch(env, path, options = {}) {
 }
 
 async function loadClient(env, clientId) {
-  const rows = await supabaseFetch(
-    env,
-    `clients?client_id=eq.${encodeURIComponent(clientId)}&select=*`
-  );
+  const path = `clients?client_id=eq.${encodeURIComponent(clientId)}&select=*`;
+  console.error('loadClient query path:', path);
+  const rows = await supabaseFetch(env, path);
+  console.error('loadClient rows:', rows);
+  console.error('loadClient rows type:', typeof rows);
+  console.error('loadClient rows length:', rows ? rows.length : 'N/A');
+  console.error('loadClient rows[0]:', rows && rows[0]);
+  console.error('loadClient returning:', (rows && rows[0]) || null);
   return (rows && rows[0]) || null;
 }
 
