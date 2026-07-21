@@ -958,6 +958,9 @@ function generateSubmissionId() {
 async function supabaseFetch(env, path, options = {}) {
   const url = `${env.SUPABASE_URL.replace(/\/$/, "")}/rest/v1/${path}`;
 
+  console.error("SUPABASE_URL:", env.SUPABASE_URL);
+  console.error("FULL URL:", url);
+
   const response = await fetch(url, {
     method: options.method || "GET",
     headers: {
