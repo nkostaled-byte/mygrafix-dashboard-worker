@@ -482,13 +482,11 @@ async function parseJsonBody(request) {
  */
 async function handlePublicSite(url, env) {
   const clientId = (url.searchParams.get("clientId") || "").trim();
-  console.error('handlePublicSite called with clientId:', clientId);
   if (!clientId) {
     return jsonResponse({ success: false, error: "Missing clientId." }, 400);
   }
 
   const client = await loadClient(env, clientId);
-  console.error('handlePublicSite loadClient returned:', client);
   if (!client || !client.active) {
     return jsonResponse({ success: false, error: "Business not found." }, 404);
   }
@@ -497,7 +495,7 @@ async function handlePublicSite(url, env) {
   // query fails for any reason, we return [] instead of crashing the
   // whole endpoint.
   const [products, services, staff, reviews, gallery] = await Promise.all([
-    safeQuery(env, `products?client_id=eq.${encodeURIComponent(clientId)}&is_hidden=eq.false&select=*&order=name.asc`),
+    safeQuery(env, `products?client_id=eq.${encodeURIComponent(clientId)}&or=(is_hidden.is.null,is_hidden.eq.false)&select=*&order=name.asc`),
     safeQuery(env, `services?client_id=eq.${encodeURIComponent(clientId)}&active=eq.true&select=*&order=name.asc`),
     safeQuery(env, `staff?client_id=eq.${encodeURIComponent(clientId)}&active=eq.true&select=*&order=name.asc`),
     safeQuery(env, `reviews?client_id=eq.${encodeURIComponent(clientId)}&select=*&order=created_at.desc`),
@@ -667,8 +665,14 @@ async function handleDashboardCreate(request, env, resource) {
   const payload = await parseJsonBody(request);
   if (!payload) return jsonResponse({ success: false, error: "Invalid or missing JSON body." }, 400);
 
-  // Automatically inject client_id into the payload
+  // Automatically inject client_id into the payload. For products, also
+  // default is_hidden to false when the dashboard didn't send it — this
+  // guards against rows landing as NULL and silently vanishing from the
+  // public site's `is_hidden=eq.false` listing.
   const row = { ...payload, client_id: clientId };
+  if (resource === "products" && row.is_hidden === undefined) {
+    row.is_hidden = false;
+  }
 
   const result = await supabaseFetch(env, resource, {
     method: "POST",
@@ -958,9 +962,6 @@ function generateSubmissionId() {
 async function supabaseFetch(env, path, options = {}) {
   const url = `${env.SUPABASE_URL.replace(/\/$/, "")}/rest/v1/${path}`;
 
-  console.error("SUPABASE_URL:", env.SUPABASE_URL);
-  console.error("FULL URL:", url);
-
   const response = await fetch(url, {
     method: options.method || "GET",
     headers: {
@@ -986,13 +987,7 @@ async function supabaseFetch(env, path, options = {}) {
 
 async function loadClient(env, clientId) {
   const path = `clients?client_id=eq.${encodeURIComponent(clientId)}&select=*`;
-  console.error('loadClient query path:', path);
   const rows = await supabaseFetch(env, path);
-  console.error('loadClient rows:', rows);
-  console.error('loadClient rows type:', typeof rows);
-  console.error('loadClient rows length:', rows ? rows.length : 'N/A');
-  console.error('loadClient rows[0]:', rows && rows[0]);
-  console.error('loadClient returning:', (rows && rows[0]) || null);
   return (rows && rows[0]) || null;
 }
 
