@@ -420,50 +420,39 @@ function base64UrlToArrayBuffer(b64url) {
  * Resolves a Supabase auth user id to the client_id they belong to —
  * either as the client owner or as an active team member.
  */
-async function resolveClientId(env, authUserId) {
-  const ownerRows = await supabaseFetch(
-    env,
-    `clients?auth_user_id=eq.${encodeURIComponent(authUserId)}&select=client_id`
-  );
-  if (ownerRows.length) return ownerRows[0].client_id;
+async function supabaseFetch(env, path, options = {}) {
+  const url = `${env.SUPABASE_URL.replace(/\/$/, "")}/rest/v1/${path}`;
 
-  const teamRows = await supabaseFetch(
-    env,
-    `team_members?auth_user_id=eq.${encodeURIComponent(authUserId)}&active=eq.true&select=client_id`
-  );
-  if (teamRows.length) return teamRows[0].client_id;
+  console.error("==========");
+  console.error("URL:", url);
 
-  return null;
-}
+  const response = await fetch(url, {
+    method: options.method || "GET",
+    headers: {
+      apikey: env.SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+      "Content-Type": "application/json",
+      Prefer: options.prefer || "return=representation",
+      ...(options.headers || {}),
+    },
+    body: options.body,
+  });
 
-// ==================================================
-// REQUEST HELPERS
-// ==================================================
+  console.error("STATUS:", response.status);
 
-function handleOptions() {
-  return new Response(null, { headers: CORS_HEADERS });
-}
+  const text = await response.text();
 
-function jsonResponse(body, status = 200, extraHeaders = {}) {
-  return Response.json(body, { status, headers: { ...CORS_HEADERS, ...extraHeaders } });
-}
+  console.error("BODY:", text);
 
-function rateLimitResponse(retryAfter) {
-  return jsonResponse(
-    { success: false, error: "Too many requests. Please try again shortly." },
-    429,
-    { "Retry-After": String(retryAfter) }
-  );
-}
-
-async function parseJsonBody(request) {
-  try {
-    const data = await request.json();
-    if (!data || typeof data !== "object") return null;
-    return data;
-  } catch {
-    return null;
+  if (!response.ok) {
+    throw new Error(
+      `Supabase error (${response.status}) on ${path}: ${text}`
+    );
   }
+
+  if (response.status === 204) return null;
+
+  return text ? JSON.parse(text) : null;
 }
 
 // ==================================================
