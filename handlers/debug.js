@@ -46,6 +46,10 @@ export async function handleDebugSupabase(request, env) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20_000);
 
+    console.log("SUPABASE_URL =", env.SUPABASE_URL);
+    console.log("KEY EXISTS =", !!env.SUPABASE_SERVICE_ROLE_KEY);
+    console.log("URL =", url);
+
     const response = await fetch(url, {
       method: "GET",
       headers: {
