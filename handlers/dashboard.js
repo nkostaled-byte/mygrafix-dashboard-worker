@@ -8,10 +8,11 @@
  */
 
 import { jsonResponse } from "../lib/responses.js";
-import { parseJsonBody, generateRequestId } from "../lib/utils.js";
+import { parseJsonBody, generateRequestId, generateReference, mapResourceFields } from "../lib/utils.js";
 import { verifySupabaseJwt, resolveClientId } from "../lib/auth.js";
 import { supabaseFetch } from "../lib/supabase.js";
 import { ALLOWED_DASHBOARD_RESOURCES } from "../config/constants.js";
+import { findOrCreateCustomer } from "../services/customerService.js";
 
 // ==================================================
 // AUTHENTICATION HELPER
@@ -40,13 +41,54 @@ async function handleDashboardList(request, env, resource) {
   let path = `${resource}?client_id=eq.${encodeURIComponent(clientId)}&select=*`;
 
   const orderBy = url.searchParams.get("order");
-  if (orderBy) path += `&order=${encodeURIComponent(orderBy)}`;
+  if (orderBy) {
+    path += `&order=${encodeURIComponent(orderBy)}`;
+  } else {
+    path += `&order=created_at.desc`;
+  }
 
   const limit = url.searchParams.get("limit");
   if (limit) path += `&limit=${encodeURIComponent(limit)}`;
 
   const rows = await supabaseFetch(env, path);
-  return jsonResponse({ success: true, data: rows || [] });
+  const mapped = mapResourceFields(rows || [], resource, "toCamel");
+  return jsonResponse({ success: true, data: mapped });
+}
+
+/**
+ * Known database columns per resource (snake_case).
+ * Used to sanitize incoming payloads — unsupported fields are safely ignored.
+ */
+const KNOWN_COLUMNS = {
+  products: ["client_id", "name", "sku", "category", "price", "cost_price", "stock_qty", "low_stock_warning", "image_url", "barcode", "variants", "is_hidden"],
+  services: ["client_id", "name", "category", "duration_minutes", "price", "description", "image_url", "active"],
+  customers: ["client_id", "name", "email", "phone", "notes", "tags"],
+  bookings: ["client_id", "customer_id", "service_id", "staff_id", "start_time", "end_time", "status"],
+  orders: ["client_id", "customer_id", "order_number", "status", "subtotal", "tax", "total", "notes"],
+  invoices: ["client_id", "customer_id", "order_id", "invoice_number", "status", "subtotal", "tax", "total", "issued_at", "due_at", "pdf_url"],
+  staff: ["client_id", "name", "full_name", "role", "active"],
+  submissions: ["submission_id", "client_id", "form_name", "customer_name", "customer_email", "submission_json", "status", "ip_address", "user_agent"],
+  gallery: ["client_id", "title", "before_url", "after_url", "barber_name"],
+  reviews: ["client_id", "name", "rating", "text", "service", "avatar"],
+  team_members: ["client_id", "auth_user_id", "name", "email", "role", "active"],
+  clients: ["client_id", "auth_user_id", "business_name", "owner_email", "reply_email", "active", "logo_url", "primary_color", "secondary_color", "hero_title", "hero_subtitle", "phone", "address", "opening_hours", "business_type", "claim_code", "bank_name", "bank_account_name", "bank_account_number", "bank_branch_code", "payment_instructions"],
+};
+
+/**
+ * Sanitize a payload to only include known database columns for the given resource.
+ * Unknown fields are silently dropped.
+ */
+function sanitizePayload(payload, resource) {
+  const allowed = KNOWN_COLUMNS[resource];
+  if (!allowed) return payload; // unknown resource, pass through
+
+  const sanitized = {};
+  for (const key of Object.keys(payload)) {
+    if (allowed.includes(key)) {
+      sanitized[key] = payload[key];
+    }
+  }
+  return sanitized;
 }
 
 async function handleDashboardCreate(request, env, resource) {
@@ -57,17 +99,70 @@ async function handleDashboardCreate(request, env, resource) {
   const payload = await parseJsonBody(request);
   if (!payload) return jsonResponse({ success: false, error: "Invalid or missing JSON body." }, 400);
 
-  const row = { ...payload, client_id: clientId };
-  if (resource === "products" && row.is_hidden === undefined) {
-    row.is_hidden = false;
+  const mappedPayload = mapResourceFields({ ...payload, clientId }, resource, "toSnake");
+
+  // ── Auto-generate SKU for products if missing ────────────────
+  if (resource === "products") {
+    if (!mappedPayload.sku || mappedPayload.sku.trim() === "") {
+      mappedPayload.sku = generateReference("SKU");
+    }
+    if (mappedPayload.is_hidden === undefined) {
+      mappedPayload.is_hidden = false;
+    }
+    // Ensure required numeric defaults
+    if (mappedPayload.cost_price === undefined) mappedPayload.cost_price = 0;
+    if (mappedPayload.low_stock_warning === undefined) mappedPayload.low_stock_warning = 5;
   }
+
+  // ── Resource-specific preprocessing ──────────────────────────
+  if (resource === "orders") {
+    const customerName = mappedPayload.customer_name || payload.customerName || "";
+    const customerEmail = mappedPayload.customer_email || payload.customerEmail || "";
+    const customer = await findOrCreateCustomer(env, clientId, {
+      name: customerName,
+      email: customerEmail,
+    });
+    mappedPayload.customer_id = customer.id;
+    mappedPayload.order_number = generateReference("ORD");
+    mappedPayload.subtotal = mappedPayload.total || 0;
+    mappedPayload.tax = 0;
+    delete mappedPayload.customer_name;
+    delete mappedPayload.customer_email;
+    delete mappedPayload.items_count;
+    delete mappedPayload.payment_method;
+  }
+
+  if (resource === "invoices") {
+    const clientName = mappedPayload.client_name || payload.clientName || "";
+    const clientEmail = mappedPayload.client_email || payload.clientEmail || "";
+    const customer = await findOrCreateCustomer(env, clientId, {
+      name: clientName,
+      email: clientEmail,
+    });
+    mappedPayload.customer_id = customer.id;
+    mappedPayload.invoice_number = generateReference("INV");
+    mappedPayload.total = mappedPayload.total || mappedPayload.amount || 0;
+    mappedPayload.subtotal = mappedPayload.total;
+    mappedPayload.tax = 0;
+    if (mappedPayload.due_date) {
+      mappedPayload.due_at = mappedPayload.due_date;
+      delete mappedPayload.due_date;
+    }
+    delete mappedPayload.client_name;
+    delete mappedPayload.client_email;
+    delete mappedPayload.amount;
+  }
+
+  // ── Sanitize: remove any fields not in the known columns ─────
+  const sanitized = sanitizePayload(mappedPayload, resource);
 
   const result = await supabaseFetch(env, resource, {
     method: "POST",
-    body: JSON.stringify(row),
+    body: JSON.stringify(sanitized),
   });
 
-  return jsonResponse({ success: true, data: result });
+  const mapped = mapResourceFields(result || {}, resource, "toCamel");
+  return jsonResponse({ success: true, data: mapped });
 }
 
 async function handleDashboardUpdate(request, env, resource, id) {
@@ -78,6 +173,8 @@ async function handleDashboardUpdate(request, env, resource, id) {
   const payload = await parseJsonBody(request);
   if (!payload) return jsonResponse({ success: false, error: "Invalid or missing JSON body." }, 400);
 
+  const mappedPayload = mapResourceFields(payload, resource, "toSnake");
+
   const existing = await supabaseFetch(
     env,
     `${resource}?id=eq.${encodeURIComponent(id)}&client_id=eq.${encodeURIComponent(clientId)}&select=id`
@@ -86,10 +183,13 @@ async function handleDashboardUpdate(request, env, resource, id) {
     return jsonResponse({ success: false, error: "Resource not found." }, 404);
   }
 
+  // ── Sanitize: remove any fields not in the known columns ─────
+  const sanitized = sanitizePayload(mappedPayload, resource);
+
   await supabaseFetch(env, `${resource}?id=eq.${encodeURIComponent(id)}`, {
     method: "PATCH",
     prefer: "return=minimal",
-    body: JSON.stringify(payload),
+    body: JSON.stringify(sanitized),
   });
 
   return jsonResponse({ success: true });
@@ -155,8 +255,8 @@ async function handleDashboardMetrics(request, env) {
     pendingInvoices: pendingInvoices.length,
     unreadSubmissions: unreadSubmissions.length,
     todayBookings: todayBookings || [],
-    daily_sales: buildDailySales(orders || []),
-    monthly_revenue: buildMonthlyRevenue(orders || []),
+    dailySales: buildDailySales(orders || []),
+    monthlyRevenue: buildMonthlyRevenue(orders || []),
   };
 
   return jsonResponse({ success: true, data: metrics });

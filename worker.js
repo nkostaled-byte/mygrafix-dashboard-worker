@@ -21,7 +21,7 @@ import { generateRequestId } from "./lib/utils.js";
 import { handleSubmission } from "./handlers/forms.js";
 import { handlePublicSite, handlePublicAvailability } from "./handlers/public.js";
 import { handleDashboardRoute } from "./handlers/dashboard.js";
-import { handleClaimAccount, handleRelinkAccount } from "./handlers/claim.js";
+import { handleClaimAccount, handleRelinkAccount, handleClaimStatus } from "./handlers/claim.js";
 import { handleSearch } from "./handlers/search.js";
 import { handleUpload } from "./handlers/upload.js";
 import { handleCreateOrder } from "./handlers/orders.js";
@@ -73,6 +73,10 @@ export default {
       }
 
       // ---- Claim account ----
+      if (request.method === "GET" && url.pathname === "/api/claim-account/status") {
+        return await handleClaimStatus(request, env);
+      }
+
       if (request.method === "POST" && url.pathname === "/api/claim-account") {
         return await handleClaimAccount(request, env);
       }

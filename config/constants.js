@@ -98,6 +98,7 @@ export const EXPORTABLE_TABLES = {
 export const ALLOWED_DASHBOARD_RESOURCES = [
   "products", "customers", "bookings", "orders",
   "invoices", "submissions", "services", "staff", "team_members",
+  "gallery", "reviews", "clients",
 ];
 
 // ==================================================

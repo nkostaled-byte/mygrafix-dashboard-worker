@@ -1,0 +1,72 @@
+-- ==================================================
+-- SCHEMA SYNC MIGRATION — MINIMAL
+-- ==================================================
+-- ONLY the changes required by the Worker code.
+-- All changes verified against Worker source files.
+--
+-- SAFE: Idempotent (IF NOT EXISTS), no data deletion
+-- ==================================================
+
+-- ==================================================
+-- VERIFIED: submissions table — 4 missing columns
+-- Source: services/submissionService.js saveSubmission()
+-- Sends: ip_address, user_agent
+-- Source: services/submissionService.js saveEmailIds()
+-- Saves: customer_email_id, owner_email_id
+-- ==================================================
+ALTER TABLE public.submissions
+  ADD COLUMN IF NOT EXISTS ip_address TEXT NULL,
+  ADD COLUMN IF NOT EXISTS user_agent TEXT NULL,
+  ADD COLUMN IF NOT EXISTS customer_email_id TEXT NULL,
+  ADD COLUMN IF NOT EXISTS owner_email_id TEXT NULL;
+
+-- ==================================================
+-- END OF REQUIRED CHANGES
+-- ==================================================
+--
+-- ITEMS BELOW WERE REMOVED AFTER CODE REVIEW:
+--
+-- assigned_staff_id on submissions:
+--   Worker saveSubmission() does NOT write this column.
+--   Frontend assignStaffToSubmission() is a no-op console.log.
+--
+-- updated_at on all tables:
+--   Worker never reads or writes updated_at anywhere.
+--   All queries use only created_at for ordering.
+--
+-- category_id on products:
+--   Worker queries products by id, client_id, is_hidden only.
+--   Products use `category` TEXT column, not category_id FK.
+--
+-- total_orders, total_spent on customers:
+--   Worker findOrCreateCustomer() only reads: name, email, phone.
+--   No Worker code reads/writes these columns.
+--
+-- notes on bookings:
+--   Worker handleCreateBooking() creates bookings without notes.
+--
+-- permissions on team_members:
+--   Worker resolveClientId() reads only: auth_user_id, active, client_id.
+--   Dashboard CRUD uses select=* but never filters by permissions.
+--
+-- GIN name_search indexes:
+--   Worker search_all RPC uses ILIKE leading-wildcard pattern.
+--   GIN indexes DON'T accelerate leading-wildcard ILIKE queries.
+--
+-- settings table indexes:
+--   Worker never references the settings table.
+--
+-- updated_at triggers:
+--   Not needed since updated_at columns aren't Worker-referenced.
+--
+-- RLS policies:
+--   Worker uses SUPABASE_SERVICE_ROLE_KEY (bypasses RLS).
+--   All queries go through supabaseFetch() with service_role key.
+--   RLS is a direct-DB security layer, not required by Worker.
+--
+-- auth_client_id() function:
+--   Only used by RLS policies. Not called by Worker.
+--
+-- set_invoice_issued_at trigger:
+--   Worker handleCreateInvoice() sets issued_at via API body.
+--   Worker handleSendInvoice() patches status only, not reliant on trigger.

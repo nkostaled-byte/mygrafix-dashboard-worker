@@ -2,8 +2,9 @@
  * Account Claiming Handlers
  * ==========================
  *
- * POST /api/claim-account — Called after Supabase Auth signup.
- * POST /api/claim-account/relink — Manual relink with claim code.
+ * GET /api/claim-account/status — Check if user is linked to a business
+ * POST /api/claim-account — Create a new business or link existing
+ * POST /api/claim-account/relink — Manual relink with claim code
  */
 
 import { jsonResponse } from "../lib/responses.js";
@@ -13,12 +14,47 @@ import { supabaseFetch } from "../lib/supabase.js";
 import { clientHasNoData } from "../services/submissionService.js";
 
 /**
+ * GET /api/claim-account/status
+ *
+ * Lightweight check: is the authenticated user linked to a business?
+ * Returns { linked: boolean, clientId: string | null, businessName: string | null }
+ */
+export async function handleClaimStatus(request, env) {
+  const claims = await verifySupabaseJwt(request, env);
+  if (!claims) return jsonResponse({ success: false, error: "Unauthorized." }, 401);
+
+  const authUserId = claims.sub;
+
+  const clients = await supabaseFetch(
+    env,
+    `clients?auth_user_id=eq.${encodeURIComponent(authUserId)}&select=client_id,business_name&limit=1`,
+    { requestId: generateRequestId() }
+  );
+
+  if (clients && clients.length) {
+    return jsonResponse({
+      success: true,
+      linked: true,
+      clientId: clients[0].client_id,
+      businessName: clients[0].business_name,
+    });
+  }
+
+  return jsonResponse({
+    success: true,
+    linked: false,
+    clientId: null,
+    businessName: null,
+  });
+}
+
+/**
  * POST /api/claim-account
  *
  * Three possible outcomes:
  * 1. Already linked — no-op
  * 2. Existing client row (by email) with no auth_user_id — link it
- * 3. No existing record — create a new client
+ * 3. No existing record — create a new client with full business details
  */
 export async function handleClaimAccount(request, env) {
   const requestId = generateRequestId();
@@ -33,7 +69,7 @@ export async function handleClaimAccount(request, env) {
   // 1. Already linked?
   const alreadyLinked = await supabaseFetch(
     env,
-    `clients?auth_user_id=eq.${encodeURIComponent(authUserId)}&select=client_id,business_name`,
+    `clients?auth_user_id=eq.${encodeURIComponent(authUserId)}&select=client_id,business_name,business_type,country,currency,timezone,owner_email,phone,primary_color,logo_url`,
     { requestId }
   );
   if (alreadyLinked && alreadyLinked.length) {
@@ -61,9 +97,16 @@ export async function handleClaimAccount(request, env) {
     return jsonResponse({ success: true, status: "linked", client });
   }
 
-  // 3. No existing record — create new client
+  // 3. No existing record — create new client with full business details
   const payload = await parseJsonBody(request);
   const businessName = payload?.businessName || "My Business";
+  const businessType = payload?.businessType || null;
+  const country = payload?.country || null;
+  const currency = payload?.currency || null;
+  const timezone = payload?.timezone || null;
+  const phone = payload?.phone || null;
+  const primaryColor = payload?.primaryColor || null;
+  const logoUrl = payload?.logoUrl || null;
   const clientId = generateReference("CLI").toLowerCase();
 
   const [created] = await supabaseFetch(env, "clients", {
@@ -72,7 +115,14 @@ export async function handleClaimAccount(request, env) {
       client_id: clientId,
       auth_user_id: authUserId,
       business_name: businessName,
+      business_type: businessType,
+      country: country,
+      currency: currency,
+      timezone: timezone,
       owner_email: email,
+      phone: phone,
+      primary_color: primaryColor,
+      logo_url: logoUrl,
       active: true,
     }),
     requestId,
