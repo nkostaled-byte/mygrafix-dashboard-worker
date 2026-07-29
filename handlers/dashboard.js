@@ -52,6 +52,23 @@ async function handleDashboardList(request, env, resource) {
 
   const rows = await supabaseFetch(env, path);
   const mapped = mapResourceFields(rows || [], resource, "toCamel");
+
+  // Resolve category_id → category name for products
+  if (resource === "products" && mapped.length) {
+    const categoryIds = mapped.filter(p => p.categoryId).map(p => p.categoryId);
+    if (categoryIds.length) {
+      const inFilter = categoryIds.map(id => `"${id}"`).join(",");
+      const categories = await supabaseFetch(
+        env,
+        `categories?client_id=eq.${encodeURIComponent(clientId)}&id=in.(${inFilter})&select=id,name`
+      );
+      const catMap = new Map((categories || []).map(c => [c.id, c.name]));
+      for (const product of mapped) {
+        product.category = catMap.get(product.categoryId) || "";
+      }
+    }
+  }
+
   return jsonResponse({ success: true, data: mapped });
 }
 
@@ -60,7 +77,7 @@ async function handleDashboardList(request, env, resource) {
  * Used to sanitize incoming payloads — unsupported fields are safely ignored.
  */
 const KNOWN_COLUMNS = {
-  products: ["client_id", "name", "sku", "category", "price", "cost_price", "stock_qty", "low_stock_warning", "image_url", "barcode", "variants", "is_hidden"],
+  products: ["client_id", "name", "sku", "category_id", "price", "cost_price", "stock_qty", "low_stock_warning", "image_url", "barcode", "variants", "is_hidden"],
   services: ["client_id", "name", "category", "duration_minutes", "price", "description", "image_url", "active"],
   customers: ["client_id", "name", "email", "phone", "notes", "tags"],
   bookings: ["client_id", "customer_id", "service_id", "staff_id", "start_time", "end_time", "status"],
@@ -112,6 +129,34 @@ async function handleDashboardCreate(request, env, resource) {
     // Ensure required numeric defaults
     if (mappedPayload.cost_price === undefined) mappedPayload.cost_price = 0;
     if (mappedPayload.low_stock_warning === undefined) mappedPayload.low_stock_warning = 5;
+
+    // Resolve category name → category_id
+    // Frontend sends `category` (text), but DB uses `category_id` (FK to categories table)
+    const categoryName = mappedPayload.category || payload.category || "";
+    delete mappedPayload.category;
+    if (categoryName) {
+      // Look for existing category by name
+      const existing = await supabaseFetch(
+        env,
+        `categories?client_id=eq.${encodeURIComponent(clientId)}&name=eq.${encodeURIComponent(categoryName)}&select=id`,
+        { requestId: generateRequestId() }
+      );
+      if (existing && existing.length) {
+        mappedPayload.category_id = existing[0].id;
+      } else {
+        // Create new category
+        const [newCategory] = await supabaseFetch(env, "categories", {
+          method: "POST",
+          body: JSON.stringify({
+            client_id: clientId,
+            name: categoryName,
+            sort_order: 0,
+          }),
+          requestId: generateRequestId(),
+        });
+        mappedPayload.category_id = newCategory?.id || null;
+      }
+    }
   }
 
   // ── Resource-specific preprocessing ──────────────────────────
@@ -231,7 +276,7 @@ async function handleDashboardMetrics(request, env) {
     supabaseFetch(env, `bookings?client_id=eq.${encodeURIComponent(clientId)}&select=id,status`),
     supabaseFetch(env, `orders?client_id=eq.${encodeURIComponent(clientId)}&select=id,total,created_at`),
     supabaseFetch(env, `invoices?client_id=eq.${encodeURIComponent(clientId)}&select=id,total,status`),
-    supabaseFetch(env, `submissions?client_id=eq.${encodeURIComponent(clientId)}&select=id,status`),
+    supabaseFetch(env, `submissions?client_id=eq.${encodeURIComponent(clientId)}&select=submission_id,status`),
   ]);
 
   const totalRevenue = (orders || []).reduce((sum, o) => sum + Number(o.total || 0), 0);
