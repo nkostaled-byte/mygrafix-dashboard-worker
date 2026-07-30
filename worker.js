@@ -91,7 +91,7 @@ export default {
       }
 
       // ---- Upload ----
-      if (request.method === "POST" && url.pathname === "/api/upload") {
+      if (["POST", "DELETE"].includes(request.method) && url.pathname === "/api/upload") {
         return await handleUpload(request, env, url);
       }
 

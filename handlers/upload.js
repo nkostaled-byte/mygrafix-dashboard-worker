@@ -27,9 +27,12 @@ import {
  *   Content-Type: image/png|image/jpeg|image/webp|image/gif
  *
  * Body: raw image bytes
+ *
+ * DELETE /api/upload?key=<r2-key>
+ *
+ * Deletes an uploaded image from R2 by its key.
  */
 export async function handleUpload(request, env, url) {
-  // Authenticate
   const claims = await verifySupabaseJwt(request, env);
   if (!claims) {
     return jsonResponse({ success: false, error: "Unauthorized." }, 401);
@@ -40,11 +43,25 @@ export async function handleUpload(request, env, url) {
     return jsonResponse({ success: false, error: "No client account linked to this login." }, 403);
   }
 
-  // Validate folder
+  // ── DELETE: Remove an uploaded image ──────────────────────────
+  if (request.method === "DELETE") {
+    const key = url.searchParams.get("key");
+    if (!key) {
+      return jsonResponse({ success: false, error: "Missing 'key' query parameter." }, 400);
+    }
+    // Security: only allow deleting objects under this client's prefix
+    const allowedPrefix = `clients/${clientId}/`;
+    if (!key.startsWith(allowedPrefix)) {
+      return jsonResponse({ success: false, error: "Key does not belong to this client." }, 403);
+    }
+    await env.R2_BUCKET.delete(key);
+    return jsonResponse({ success: true });
+  }
+
+  // ── POST: Upload a new image ──────────────────────────────────
   const folderParam = (url.searchParams.get("folder") || "misc").toLowerCase();
   const folder = ALLOWED_UPLOAD_FOLDERS.includes(folderParam) ? folderParam : "misc";
 
-  // Validate content type
   const contentType = request.headers.get("Content-Type") || "";
   if (!ALLOWED_UPLOAD_TYPES.includes(contentType)) {
     return jsonResponse(
@@ -53,7 +70,6 @@ export async function handleUpload(request, env, url) {
     );
   }
 
-  // Read body
   const bytes = await request.arrayBuffer();
   if (bytes.byteLength === 0) {
     return jsonResponse({ success: false, error: "Empty file." }, 400);
@@ -62,7 +78,6 @@ export async function handleUpload(request, env, url) {
     return jsonResponse({ success: false, error: "File too large (max 5MB)." }, 400);
   }
 
-  // Generate key and upload to R2
   const extension = EXTENSION_BY_TYPE[contentType];
   const key = `clients/${clientId}/${folder}/${crypto.randomUUID()}.${extension}`;
 

@@ -246,9 +246,11 @@ async function handleDashboardDelete(request, env, resource, id) {
   if (auth.error) return auth.error;
   const { clientId } = auth;
 
+  // For products, fetch image_url so we can clean up R2
+  const selectFields = resource === "products" ? "id,image_url" : "id";
   const existing = await supabaseFetch(
     env,
-    `${resource}?id=eq.${encodeURIComponent(id)}&client_id=eq.${encodeURIComponent(clientId)}&select=id`
+    `${resource}?id=eq.${encodeURIComponent(id)}&client_id=eq.${encodeURIComponent(clientId)}&select=${selectFields}`
   );
   if (!existing || !existing.length) {
     return jsonResponse({ success: false, error: "Resource not found." }, 404);
@@ -258,6 +260,15 @@ async function handleDashboardDelete(request, env, resource, id) {
     method: "DELETE",
     prefer: "return=minimal",
   });
+
+  // Clean up associated R2 image for products
+  if (resource === "products" && existing[0].image_url && env.R2_PUBLIC_URL) {
+    const baseUrl = env.R2_PUBLIC_URL.replace(/\/$/, "");
+    if (existing[0].image_url.startsWith(baseUrl)) {
+      const key = existing[0].image_url.slice(baseUrl.length + 1);
+      await env.R2_BUCKET.delete(key).catch(() => {});
+    }
+  }
 
   return jsonResponse({ success: true });
 }
