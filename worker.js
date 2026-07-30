@@ -26,7 +26,7 @@ import { handleSearch } from "./handlers/search.js";
 import { handleUpload } from "./handlers/upload.js";
 import { handleCreateOrder } from "./handlers/orders.js";
 import { handleCreateBooking } from "./handlers/bookings.js";
-import { handleCreateInvoice, handleSendInvoice } from "./handlers/invoices.js";
+import { handleCreateInvoice, handleSendInvoice, handleDownloadInvoicePdf } from "./handlers/invoices.js";
 import { handleExport } from "./handlers/export.js";
 import { handleHealth, handleDebugSupabase } from "./handlers/debug.js";
 
@@ -106,9 +106,15 @@ export default {
       }
 
       // ---- Invoices ----
-      const sendInvoiceMatch = url.pathname.match(/^\/api\/invoices\/([0-9a-fA-F-]+)\/send$/);
-      if (request.method === "POST" && sendInvoiceMatch) {
-        return await handleSendInvoice(request, env, sendInvoiceMatch[1]);
+      const invoiceIdMatch = url.pathname.match(/^\/api\/invoices\/([0-9a-fA-F-]+)\/([a-z]+)$/);
+      if (invoiceIdMatch) {
+        const [, invoiceId, action] = invoiceIdMatch;
+        if (request.method === "POST" && action === "send") {
+          return await handleSendInvoice(request, env, invoiceId);
+        }
+        if (request.method === "GET" && action === "pdf") {
+          return await handleDownloadInvoicePdf(request, env, invoiceId);
+        }
       }
 
       if (request.method === "POST" && url.pathname === "/api/invoices") {

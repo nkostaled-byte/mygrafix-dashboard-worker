@@ -210,3 +210,43 @@ export async function handleSendInvoice(request, env, invoiceId) {
   return jsonResponse({ success: true, invoiceId: invoice.id, status: "sent" });
 }
 
+/**
+ * GET /api/invoices/:id/pdf
+ * Generates and returns a PDF for an existing invoice.
+ */
+export async function handleDownloadInvoicePdf(request, env, invoiceId) {
+  const requestId = generateRequestId();
+
+  const claims = await verifySupabaseJwt(request, env);
+  if (!claims) return jsonResponse({ success: false, error: "Unauthorized." }, 401);
+
+  const clientId = await resolveClientId(env, claims.sub);
+  if (!clientId) {
+    return jsonResponse({ success: false, error: "No client account linked to this login." }, 403);
+  }
+
+  const invoices = await supabaseFetch(
+    env,
+    `invoices?id=eq.${encodeURIComponent(invoiceId)}&client_id=eq.${encodeURIComponent(clientId)}&select=*,customer:customers(*),invoice_items(*)`,
+    { requestId }
+  );
+  const invoice = invoices && invoices[0];
+  if (!invoice) return jsonResponse({ success: false, error: "Invoice not found." }, 404);
+
+  const customer = invoice.customer || { name: "", email: "" };
+  const items = invoice.invoice_items || [];
+
+  const client = await loadClient(env, clientId, { requestId });
+  if (!client) return jsonResponse({ success: false, error: "Client not found." }, 404);
+
+  const pdfBytes = await generateInvoicePdf(client, invoice, items, customer);
+
+  return new Response(pdfBytes, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `attachment; filename="${invoice.invoice_number}.pdf"`,
+    },
+  });
+}
+
