@@ -144,13 +144,12 @@ async function handleDashboardCreate(request, env, resource) {
       if (existing && existing.length) {
         mappedPayload.category_id = existing[0].id;
       } else {
-        // Create new category
+        // Create new category (no sort_order column in categories table)
         const [newCategory] = await supabaseFetch(env, "categories", {
           method: "POST",
           body: JSON.stringify({
             client_id: clientId,
             name: categoryName,
-            sort_order: 0,
           }),
           requestId: generateRequestId(),
         });
@@ -206,7 +205,9 @@ async function handleDashboardCreate(request, env, resource) {
     body: JSON.stringify(sanitized),
   });
 
-  const mapped = mapResourceFields(result || {}, resource, "toCamel");
+  // Supabase POST with return=representation returns [record] — extract single object
+  const record = Array.isArray(result) ? result[0] : result;
+  const mapped = mapResourceFields(record || {}, resource, "toCamel");
   return jsonResponse({ success: true, data: mapped });
 }
 
