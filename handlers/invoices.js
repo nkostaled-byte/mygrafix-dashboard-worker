@@ -94,11 +94,19 @@ export async function handleCreateInvoice(request, env) {
     requestId,
   });
 
-  // Create invoice items
+  // Create invoice items (line_total omitted — computed in-app)
   await supabaseFetch(env, "invoice_items", {
     method: "POST",
     prefer: "return=minimal",
-    body: JSON.stringify(lineItems.map((li) => ({ ...li, invoice_id: invoice.id }))),
+    body: JSON.stringify(
+      lineItems.map((li) => ({
+        invoice_id: invoice.id,
+        product_id: li.product_id,
+        description: li.description,
+        quantity: li.quantity,
+        unit_price: li.unit_price,
+      }))
+    ),
     requestId,
   });
 
