@@ -224,3 +224,87 @@ export async function handleRelinkAccount(request, env) {
   return jsonResponse({ success: true, status: "linked", client: { ...target, auth_user_id: authUserId } });
 }
 
+/**
+ * PUT /api/client-settings
+ * Updates the authenticated client's business/invoice settings.
+ * Accepts any subset of: business_name, phone, address, opening_hours,
+ * bank_name, bank_account_name, bank_account_number, bank_branch_code,
+ * payment_instructions, logo_url, primary_color, secondary_color.
+ */
+export async function handleUpdateClientSettings(request, env) {
+  const claims = await verifySupabaseJwt(request, env);
+  if (!claims) return jsonResponse({ success: false, error: "Unauthorized." }, 401);
+
+  const authUserId = claims.sub;
+
+  const clients = await supabaseFetch(
+    env,
+    `clients?auth_user_id=eq.${encodeURIComponent(authUserId)}&select=client_id`,
+    { requestId: generateRequestId() }
+  );
+  if (!clients || !clients.length) {
+    return jsonResponse({ success: false, error: "Client not found." }, 404);
+  }
+  const clientId = clients[0].client_id;
+
+  const payload = await parseJsonBody(request);
+  if (!payload) return jsonResponse({ success: false, error: "Invalid or missing JSON body." }, 400);
+
+  const allowedFields = [
+    "business_name", "phone", "address", "opening_hours",
+    "bank_name", "bank_account_name", "bank_account_number",
+    "bank_branch_code", "payment_instructions",
+    "logo_url", "primary_color", "secondary_color",
+    "reply_email",
+  ];
+
+  // Map camelCase payload keys to snake_case DB columns
+  const keyMap = {
+    businessName: "business_name",
+    business_name: "business_name",
+    phone: "phone",
+    address: "address",
+    openingHours: "opening_hours",
+    opening_hours: "opening_hours",
+    bankName: "bank_name",
+    bank_name: "bank_name",
+    bankAccountName: "bank_account_name",
+    bank_account_name: "bank_account_name",
+    bankAccountNumber: "bank_account_number",
+    bank_account_number: "bank_account_number",
+    bankBranchCode: "bank_branch_code",
+    bank_branch_code: "bank_branch_code",
+    paymentInstructions: "payment_instructions",
+    payment_instructions: "payment_instructions",
+    logoUrl: "logo_url",
+    logo_url: "logo_url",
+    primaryColor: "primary_color",
+    primary_color: "primary_color",
+    secondaryColor: "secondary_color",
+    secondary_color: "secondary_color",
+    replyEmail: "reply_email",
+    reply_email: "reply_email",
+  };
+
+  const updates = {};
+  for (const [key, value] of Object.entries(payload)) {
+    const dbColumn = keyMap[key];
+    if (dbColumn && allowedFields.includes(dbColumn)) {
+      updates[dbColumn] = value;
+    }
+  }
+
+  if (Object.keys(updates).length === 0) {
+    return jsonResponse({ success: false, error: "No valid fields to update." }, 400);
+  }
+
+  await supabaseFetch(env, `clients?client_id=eq.${encodeURIComponent(clientId)}`, {
+    method: "PATCH",
+    prefer: "return=minimal",
+    body: JSON.stringify(updates),
+    requestId: generateRequestId(),
+  });
+
+  return jsonResponse({ success: true });
+}
+
