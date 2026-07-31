@@ -81,15 +81,15 @@ export async function handleCreateInvoice(request, env) {
   const [invoice] = await supabaseFetch(env, "invoices", {
     method: "POST",
     body: JSON.stringify({
-      invoice_number: invoiceNumber,
-      client_id: clientId,
-      customer_id: customer.id,
-      order_id: payload.orderId || null,
-      status: "draft",
-      subtotal,
-      tax,
-      total,
-      due_at: payload.dueDate || null,
+    invoice_number: invoiceNumber,
+    client_id: clientId,
+    customer_id: customer.id,
+    order_id: payload.orderId || null,
+    status: payload.status || "draft",
+    subtotal,
+    tax,
+    total,
+    due_at: payload.dueDate || null,
     }),
     requestId,
   });
@@ -128,10 +128,12 @@ export async function handleCreateInvoice(request, env) {
 
   return jsonResponse({
     success: true,
-    invoiceId: invoice.id,
-    invoiceNumber,
-    total,
-    pdfUrl,
+    data: {
+      invoiceId: invoice.id,
+      invoiceNumber,
+      total,
+      pdfUrl,
+    },
   });
 }
 
@@ -243,7 +245,11 @@ export async function handleDownloadInvoicePdf(request, env, invoiceId) {
   if (!invoice) return jsonResponse({ success: false, error: "Invoice not found." }, 404);
 
   const customer = invoice.customer || { name: "", email: "" };
-  const items = invoice.invoice_items || [];
+  const items = (invoice.invoice_items || []).map((item) => ({
+    ...item,
+    unit_price: Number(item.unit_price || 0),
+    line_total: Number(item.quantity || 0) * Number(item.unit_price || 0),
+  }));
 
   const client = await loadClient(env, clientId, { requestId });
   if (!client) return jsonResponse({ success: false, error: "Client not found." }, 404);

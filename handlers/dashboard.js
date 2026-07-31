@@ -40,6 +40,11 @@ async function handleDashboardList(request, env, resource) {
   const url = new URL(request.url);
   let path = `${resource}?client_id=eq.${encodeURIComponent(clientId)}&select=*`;
 
+  // Invoices: also pull the linked customer for display (client name/email)
+  if (resource === "invoices") {
+    path = `${resource}?client_id=eq.${encodeURIComponent(clientId)}&select=*,customer:customers(id,name,email)`;
+  }
+
   const orderBy = url.searchParams.get("order");
   if (orderBy) {
     path += `&order=${encodeURIComponent(orderBy)}`;
@@ -52,6 +57,16 @@ async function handleDashboardList(request, env, resource) {
 
   const rows = await supabaseFetch(env, path);
   const mapped = mapResourceFields(rows || [], resource, "toCamel");
+
+  // Expose the linked customer as clientName / clientEmail for the frontend
+  if (resource === "invoices" && mapped.length) {
+    for (const invoice of mapped) {
+      const customer = invoice.customer || null;
+      invoice.clientName = customer?.name || invoice.clientName || "";
+      invoice.clientEmail = customer?.email || invoice.clientEmail || "";
+      delete invoice.customer;
+    }
+  }
 
   // Resolve category_id → category name for products
   if (resource === "products" && mapped.length) {
