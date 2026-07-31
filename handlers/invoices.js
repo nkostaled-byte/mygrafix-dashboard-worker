@@ -6,6 +6,7 @@
  */
 
 import { jsonResponse } from "../lib/responses.js";
+import { CORS_HEADERS } from "../config/constants.js";
 import { parseJsonBody, generateReference, generateRequestId } from "../lib/utils.js";
 import { validateInvoicePayload } from "../lib/validation.js";
 import { verifySupabaseJwt, resolveClientId } from "../lib/auth.js";
@@ -244,6 +245,7 @@ export async function handleDownloadInvoicePdf(request, env, invoiceId) {
   return new Response(pdfBytes, {
     status: 200,
     headers: {
+      ...CORS_HEADERS,
       "Content-Type": "application/pdf",
       "Content-Disposition": `attachment; filename="${invoice.invoice_number}.pdf"`,
     },
