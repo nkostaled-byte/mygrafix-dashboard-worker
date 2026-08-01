@@ -21,7 +21,7 @@ import { generateRequestId } from "./lib/utils.js";
 import { handleSubmission } from "./handlers/forms.js";
 import { handlePublicSite, handlePublicAvailability } from "./handlers/public.js";
 import { handleDashboardRoute } from "./handlers/dashboard.js";
-import { handleClaimAccount, handleRelinkAccount, handleClaimStatus, handleUpdateClientSettings } from "./handlers/claim.js";
+import { handleClaimAccount, handleRelinkAccount, handleClaimStatus, handleGetClientSettings, handleUpdateClientSettings } from "./handlers/claim.js";
 import { handleSearch } from "./handlers/search.js";
 import { handleUpload } from "./handlers/upload.js";
 import { handleCreateOrder } from "./handlers/orders.js";
@@ -87,6 +87,10 @@ export default {
 
       if (request.method === "PUT" && url.pathname === "/api/client-settings") {
         return await handleUpdateClientSettings(request, env);
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/client-settings") {
+        return await handleGetClientSettings(request, env);
       }
 
       // ---- Search ----

@@ -225,27 +225,80 @@ export async function handleRelinkAccount(request, env) {
 }
 
 /**
+ * GET /api/client-settings
+ * Returns the authenticated client's business/invoice settings for the Settings page.
+ */
+export async function handleGetClientSettings(request, env) {
+  const claims = await verifySupabaseJwt(request, env);
+  if (!claims) return jsonResponse({ success: false, error: "Unauthorized." }, 401);
+
+  // Resolve the client exactly like the dashboard handlers do — supports both
+  // client owners (clients.auth_user_id) and linked team members.
+  const clientId = await resolveClientId(env, claims.sub);
+  if (!clientId) {
+    return jsonResponse({ success: false, error: "No client account linked to this login." }, 404);
+  }
+
+  // Use select=* so a missing column (e.g. a not-yet-applied migration) never
+  // fails the whole request — PostgREST only returns columns that exist.
+  const clients = await supabaseFetch(
+    env,
+    `clients?client_id=eq.${encodeURIComponent(clientId)}&select=*`,
+    { requestId: generateRequestId() }
+  );
+  const raw = clients && clients[0];
+  if (!raw) {
+    return jsonResponse({ success: false, error: "Client not found." }, 404);
+  }
+
+  return jsonResponse({
+    success: true,
+    data: {
+      businessName: raw.business_name ?? "",
+      phone: raw.phone ?? "",
+      address: raw.address ?? "",
+      openingHours: raw.opening_hours ?? "",
+      bankName: raw.bank_name ?? "",
+      bankAccountName: raw.bank_account_name ?? "",
+      bankAccountNumber: raw.bank_account_number ?? "",
+      bankBranchCode: raw.bank_branch_code ?? "",
+      bankAccountType: raw.bank_account_type ?? "",
+      bankReference: raw.bank_reference ?? "",
+      paymentInstructions: raw.payment_instructions ?? "",
+      logoUrl: raw.logo_url ?? "",
+      primaryColor: raw.primary_color ?? "",
+      secondaryColor: raw.secondary_color ?? "",
+      ownerEmail: raw.owner_email ?? "",
+    },
+  });
+}
+
+/**
  * PUT /api/client-settings
  * Updates the authenticated client's business/invoice settings.
  * Accepts any subset of: business_name, phone, address, opening_hours,
  * bank_name, bank_account_name, bank_account_number, bank_branch_code,
- * payment_instructions, logo_url, primary_color, secondary_color.
+ * bank_account_type, bank_reference, payment_instructions, logo_url,
+ * primary_color, secondary_color, reply_email.
  */
 export async function handleUpdateClientSettings(request, env) {
   const claims = await verifySupabaseJwt(request, env);
   if (!claims) return jsonResponse({ success: false, error: "Unauthorized." }, 401);
 
-  const authUserId = claims.sub;
+  const clientId = await resolveClientId(env, claims.sub);
+  if (!clientId) {
+    return jsonResponse({ success: false, error: "No client account linked to this login." }, 403);
+  }
 
   const clients = await supabaseFetch(
     env,
-    `clients?auth_user_id=eq.${encodeURIComponent(authUserId)}&select=client_id`,
+    `clients?client_id=eq.${encodeURIComponent(clientId)}&select=*`,
     { requestId: generateRequestId() }
   );
-  if (!clients || !clients.length) {
+  const existingRow = clients && clients[0];
+  if (!existingRow) {
     return jsonResponse({ success: false, error: "Client not found." }, 404);
   }
-  const clientId = clients[0].client_id;
 
   const payload = await parseJsonBody(request);
   if (!payload) return jsonResponse({ success: false, error: "Invalid or missing JSON body." }, 400);
@@ -253,7 +306,8 @@ export async function handleUpdateClientSettings(request, env) {
   const allowedFields = [
     "business_name", "phone", "address", "opening_hours",
     "bank_name", "bank_account_name", "bank_account_number",
-    "bank_branch_code", "payment_instructions",
+    "bank_branch_code", "bank_account_type", "bank_reference",
+    "payment_instructions",
     "logo_url", "primary_color", "secondary_color",
     "reply_email",
   ];
@@ -274,6 +328,10 @@ export async function handleUpdateClientSettings(request, env) {
     bank_account_number: "bank_account_number",
     bankBranchCode: "bank_branch_code",
     bank_branch_code: "bank_branch_code",
+    bankAccountType: "bank_account_type",
+    bank_account_type: "bank_account_type",
+    bankReference: "bank_reference",
+    bank_reference: "bank_reference",
     paymentInstructions: "payment_instructions",
     payment_instructions: "payment_instructions",
     logoUrl: "logo_url",
@@ -294,14 +352,25 @@ export async function handleUpdateClientSettings(request, env) {
     }
   }
 
-  if (Object.keys(updates).length === 0) {
+  // Only PATCH columns that actually exist on the client row. This keeps the
+  // save from failing when a column hasn't been added to the database yet
+  // (e.g. a not-yet-applied migration for bank_account_type/bank_reference).
+  const existingColumns = new Set(Object.keys(existingRow));
+  const finalUpdates = {};
+  for (const [column, value] of Object.entries(updates)) {
+    if (existingColumns.has(column)) {
+      finalUpdates[column] = value;
+    }
+  }
+
+  if (Object.keys(finalUpdates).length === 0) {
     return jsonResponse({ success: false, error: "No valid fields to update." }, 400);
   }
 
   await supabaseFetch(env, `clients?client_id=eq.${encodeURIComponent(clientId)}`, {
     method: "PATCH",
     prefer: "return=minimal",
-    body: JSON.stringify(updates),
+    body: JSON.stringify(finalUpdates),
     requestId: generateRequestId(),
   });
 

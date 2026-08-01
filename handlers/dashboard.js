@@ -96,9 +96,9 @@ const KNOWN_COLUMNS = {
   services: ["client_id", "name", "category", "duration_minutes", "price", "description", "image_url", "active"],
   customers: ["client_id", "name", "email", "phone", "notes", "tags"],
   bookings: ["client_id", "customer_id", "service_id", "staff_id", "start_time", "end_time", "status"],
-  orders: ["client_id", "customer_id", "order_number", "status", "subtotal", "tax", "total", "notes"],
+  orders: ["client_id", "customer_id", "customer_name", "order_number", "status", "subtotal", "tax", "total", "notes", "is_pos", "payment_method", "items", "items_count"],
   invoices: ["client_id", "customer_id", "order_id", "invoice_number", "status", "subtotal", "tax", "total", "issued_at", "due_at", "pdf_url"],
-  staff: ["client_id", "name", "full_name", "role", "active"],
+  staff: ["client_id", "name", "role", "email", "phone", "specialties", "photo_url", "active"],
   submissions: ["submission_id", "client_id", "form_name", "customer_name", "customer_email", "submission_json", "status", "ip_address", "user_agent"],
   gallery: ["client_id", "title", "before_url", "after_url", "barber_name"],
   reviews: ["client_id", "name", "rating", "text", "service", "avatar"],
@@ -174,6 +174,11 @@ async function handleDashboardCreate(request, env, resource) {
   }
 
   // ── Resource-specific preprocessing ──────────────────────────
+  if (resource === "staff") {
+    if (mappedPayload.active === undefined) mappedPayload.active = true;
+    if (mappedPayload.role === undefined) mappedPayload.role = "Team Member";
+  }
+
   if (resource === "orders") {
     const customerName = mappedPayload.customer_name || payload.customerName || "";
     const customerEmail = mappedPayload.customer_email || payload.customerEmail || "";
@@ -182,13 +187,17 @@ async function handleDashboardCreate(request, env, resource) {
       email: customerEmail,
     });
     mappedPayload.customer_id = customer.id;
-    mappedPayload.order_number = generateReference("ORD");
+    // Keep a frontend-supplied receipt number (e.g. "#POS-1234"), otherwise generate one
+    if (!mappedPayload.order_number) {
+      mappedPayload.order_number = generateReference("ORD");
+    }
     mappedPayload.subtotal = mappedPayload.total || 0;
     mappedPayload.tax = 0;
-    delete mappedPayload.customer_name;
     delete mappedPayload.customer_email;
-    delete mappedPayload.items_count;
-    delete mappedPayload.payment_method;
+    if (mappedPayload.is_pos === undefined) mappedPayload.is_pos = false;
+    if (mappedPayload.items_count === undefined) {
+      mappedPayload.items_count = Array.isArray(mappedPayload.items) ? mappedPayload.items.length : 0;
+    }
   }
 
   if (resource === "invoices") {
