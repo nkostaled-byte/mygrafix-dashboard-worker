@@ -89,6 +89,7 @@ export const EXPORTABLE_TABLES = {
   products: { filename: "products", dateColumn: "created_at" },
   bookings: { filename: "bookings", dateColumn: "start_time" },
   invoices: { filename: "invoices", dateColumn: "issued_at" },
+  leads: { filename: "leads", dateColumn: "created_at" },
 };
 
 // ==================================================

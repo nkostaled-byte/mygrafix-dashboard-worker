@@ -37,6 +37,7 @@ import {
 } from "./handlers/paystack.js";
 import { handleCreateInvoice, handleSendInvoice, handleDownloadInvoicePdf } from "./handlers/invoices.js";
 import { handleExport } from "./handlers/export.js";
+import { handleLeadsRoute } from "./handlers/leads.js";
 import { handleHealth, handleDebugSupabase } from "./handlers/debug.js";
 
 export default {
@@ -171,6 +172,11 @@ export default {
 
       if (request.method === "POST" && url.pathname === "/api/paystack/webhook") {
         return await handlePaystackWebhook(request, env);
+      }
+
+      // ---- Leads / CRM ----
+      if (url.pathname.startsWith("/api/leads")) {
+        return await handleLeadsRoute(request, env, url);
       }
 
       // ---- Form submissions (catch-all POST) ----
