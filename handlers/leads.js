@@ -19,6 +19,7 @@ import { loadClient } from "../services/clientService.js";
 import { canAccessPlan, planAccessDenied } from "../lib/planAccess.js";
 import { fetchSiteHtml, analyseSite, getDomain } from "../lib/siteScanner.js";
 import { scoreAudit, buildAiBrief, DEFAULT_STAGES, ALLOWED_STATUSES, ALLOWED_PRIORITIES } from "../services/leadsCore.js";
+import { searchPlaces } from "../lib/places.js";
 
 const MIN_PLAN_CRM = "starter";
 const MIN_PLAN_ADVANCED = "business";
@@ -815,6 +816,18 @@ function titleCase(s) {
   return String(s || "").replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+async function handleFindBusinesses(req, env) {
+  const ctx = await resolveClient(req, env, MIN_PLAN_ADVANCED);
+  if (ctx.error) return ctx.error;
+  const url = new URL(req.url);
+  const query = (url.searchParams.get("q") || "").trim();
+  const location = (url.searchParams.get("location") || "").trim() || undefined;
+  const limit = url.searchParams.get("limit") || "10";
+  const result = await searchPlaces(env, { query, location, limit });
+  if (result.error) return jsonResponse({ success: false, error: result.error }, 502);
+  return jsonResponse({ success: true, data: result.data });
+}
+
 async function handleBulk(req, env) {
   const ctx = await resolveClient(req, env, MIN_PLAN_CRM);
   if (ctx.error) return ctx.error;
@@ -931,6 +944,7 @@ export async function handleLeadsRoute(req, env, url) {
   if (path === "/api/leads/search" && method === "POST") return await handleBusinessSearch(req, env);
   if (path === "/api/leads/scan" && method === "POST") return await handleScan(req, env);
   if (path === "/api/leads/audit" && method === "POST") return await handleAudit(req, env);
+  if (path === "/api/leads/find-businesses" && method === "GET") return await handleFindBusinesses(req, env);
   if (path === "/api/leads/bulk" && method === "POST") return await handleBulk(req, env);
   if (path === "/api/leads" && method === "GET") {
     const ctx = await resolveClient(req, env, MIN_PLAN_CRM);
