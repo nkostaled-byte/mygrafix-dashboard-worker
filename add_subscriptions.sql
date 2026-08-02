@@ -19,6 +19,17 @@ ALTER TABLE public.clients
   ADD COLUMN IF NOT EXISTS hosting_subscription_code TEXT NULL,
   ADD COLUMN IF NOT EXISTS hosting_plan_code TEXT NULL;
 
+-- Free is now the default tier (downgrade target on cancel); Starter is a paid tier.
+ALTER TABLE public.clients ALTER COLUMN plan SET DEFAULT 'free';
+
+-- Backfill: clients without an active OS subscription (never paid or cancelled/expired)
+-- are moved to the Free tier. Active subscribers (have a subscription code) are kept.
+UPDATE public.clients
+SET plan = 'free'
+WHERE plan <> 'free'
+  AND paystack_subscription_code IS NULL
+  AND (plan_expires_at IS NULL OR plan_expires_at < now());
+
 CREATE TABLE IF NOT EXISTS public.subscriptions (
     id BIGSERIAL PRIMARY KEY,
     client_id TEXT NOT NULL REFERENCES public.clients(client_id) ON DELETE CASCADE,
@@ -48,6 +59,8 @@ CREATE TABLE IF NOT EXISTS public.paystack_plans (
 CREATE INDEX IF NOT EXISTS idx_subscriptions_client_id ON public.subscriptions (client_id);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_sub_code ON public.subscriptions (paystack_subscription_code);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_reference ON public.subscriptions (paystack_reference);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_reference_unique
+  ON public.subscriptions (paystack_reference) WHERE paystack_reference IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_paystack_plans_plan_id ON public.paystack_plans (plan_id);
 
 -- Backfill for tables that may already exist from a previous run

@@ -2,7 +2,7 @@
  * Paystack Subscriptions Handler
  * ================================
  * Supports two independent subscription products per workspace:
- *   - "os"       (Business OS plans: starter/business/professional/enterprise)
+ *   - "os"       (Business OS plans: free/starter/business/professional)
  *   - "hosting"  (Web hosting plans: hosting-basic/hosting-pro)
  *
  * Endpoints:
@@ -34,7 +34,19 @@ const SUBSCRIPTION_INTERVAL = "monthly";
 const YEARLY_INTERVAL = "annually";
 
 // OS plan catalog — amounts are RAND values shown in R. Keep in sync with src/data/pricingData.ts
+// "free" is the default tier (no checkout — it is the downgrade target on cancel).
 const PLANS = [
+  {
+    id: "free",
+    name: "Free",
+    tagline: "Start today, upgrade when you grow",
+    monthlyPrice: 0,
+    yearlyPrice: 0,
+    monthlyBillingText: "Free forever",
+    yearlyBillingText: "Free forever",
+    features: ["Orders", "Customers (CRM)", "Bookings & Appointments", "Overview Dashboard"],
+    includedFromPrevious: "",
+  },
   {
     id: "starter",
     name: "Starter",
@@ -87,17 +99,6 @@ const PLANS = [
     isBestValue: true,
     features: ["Inventory Tracking", "Advanced Analytics", "Priority Support"],
     includedFromPrevious: "Everything in Business +",
-  },
-  {
-    id: "enterprise",
-    name: "Enterprise",
-    tagline: "Large brands & high-volume businesses",
-    monthlyPrice: 1499,
-    yearlyPrice: 1199,
-    monthlyBillingText: "Billed monthly",
-    yearlyBillingText: "R14,388 billed annually",
-    features: ["API Access", "Unlimited Staff", "Dedicated Support"],
-    includedFromPrevious: "Everything in Professional +",
   },
 ];
 
@@ -394,7 +395,7 @@ async function deactivateProduct(env, clientId, product, requestId) {
           hosting_plan_code: null,
         }
       : {
-          plan: "starter",
+          plan: "free",
           plan_expires_at: new Date().toISOString(),
           paystack_subscription_code: null,
           paystack_plan_code: null,
@@ -495,9 +496,11 @@ async function disableProductSubscriptions(env, client, product, requestId) {
 }
 
 async function recordSubscription(env, clientId, product, planId, payload, requestId, months = 1) {
-  await supabaseFetch(env, "subscriptions", {
+  // Upsert on paystack_reference so the same payment (webhook + verify callback)
+  // can only ever create ONE history row instead of duplicating it.
+  await supabaseFetch(env, "subscriptions?on_conflict=paystack_reference", {
     method: "POST",
-    prefer: "return=minimal",
+    prefer: "resolution=merge-duplicates,return=minimal",
     body: JSON.stringify({
       client_id: clientId,
       product,
@@ -532,6 +535,9 @@ export async function handlePaystackCheckout(request, env) {
   const product = payload.product === "hosting" ? "hosting" : "os";
   if (!getPlanById(product, payload.plan)) {
     return jsonResponse({ success: false, error: "Unknown plan." }, 400);
+  }
+  if (payload.plan === "free") {
+    return jsonResponse({ success: false, error: "The Free plan doesn't require a subscription. Upgrade to a paid plan to get started." }, 400);
   }
   const planId = payload.plan;
   const billing = payload.billing === "yearly" ? "yearly" : "monthly";
@@ -714,9 +720,10 @@ export async function handlePaystackStatus(request, env) {
     // do NOT require a stored subscription code here: the verify fallback can
     // activate a plan (webhook already ran) without a retrievable subscription
     // code, and the UI + plan gating must treat that as an active subscription.
+    // "free" is the only non-active stored plan.
     const osActive =
       Boolean(client.plan) &&
-      client.plan !== "starter" &&
+      client.plan !== "free" &&
       osExpires !== null &&
       osExpires > now;
 
@@ -729,8 +736,8 @@ export async function handlePaystackStatus(request, env) {
     return jsonResponse({
       success: true,
       data: {
-        plan: client.plan || "starter",
-        plan_name: getPlanById("os", client.plan)?.name || client.plan,
+        plan: client.plan || "free",
+        plan_name: getPlanById("os", client.plan)?.name || client.plan || "Free",
         plan_started_at: client.plan_started_at || null,
         plan_expires_at: client.plan_expires_at || null,
         subscription_active: osActive,
@@ -787,7 +794,7 @@ export async function handlePaystackCancel(request, env) {
     const data =
       product === "hosting"
         ? { hosting_plan: null, hosting_subscription_active: false }
-        : { plan: "starter", subscription_active: false };
+        : { plan: "free", subscription_active: false };
 
     return jsonResponse({ success: true, data });
   } catch (err) {

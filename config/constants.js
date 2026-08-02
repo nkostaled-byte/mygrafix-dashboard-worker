@@ -107,24 +107,25 @@ export const ALLOWED_DASHBOARD_RESOURCES = [
 
 // Minimum subscription plan required to access each dashboard resource.
 // Mirrors the plan feature tiers shown on the pricing page.
+// The Free tier includes Orders, Customers and Bookings.
 export const RESOURCE_MIN_PLAN = {
+  orders: "free",
+  customers: "free",
+  bookings: "free",
   products: "starter",
   services: "starter",
-  customers: "starter",
-  bookings: "starter",
-  orders: "starter",
   submissions: "starter",
   gallery: "business",
   reviews: "business",
   staff: "business",
   team_members: "business",
   invoices: "business",
-  clients: "starter",
+  clients: "free",
 };
 
 // Minimum plan for miscellaneous dashboard features not tied to a resource.
 export const FEATURE_MIN_PLAN = {
-  metrics: "starter", // Basic Analytics (Overview + Analytics pages)
+  metrics: "free", // Overview dashboard KPI cards (available on Free)
   team_invite: "business", // Team Members & Staff Access
   csv_export: "business", // Reports & Exports
 };
