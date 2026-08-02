@@ -14,6 +14,7 @@ import { supabaseFetch } from "../lib/supabase.js";
 import { loadClient } from "../services/clientService.js";
 import { findOrCreateCustomer } from "../services/customerService.js";
 import { logEmail } from "../services/submissionService.js";
+import { canAccessPlan, planAccessDenied } from "../lib/planAccess.js";
 import {
   sendEmail,
   buildInvoiceEmail,
@@ -49,8 +50,10 @@ export async function handleCreateInvoice(request, env) {
   const client = await loadClient(env, clientId, { requestId });
   if (!client) return jsonResponse({ success: false, error: "Client not found." }, 404);
 
+  // Invoices & PDFs require the Business plan or higher
+  if (!canAccessPlan(client, "business")) return planAccessDenied("business");
+
   // Resolve customer
-  let customer;
   if (payload.customer.id) {
     const rows = await supabaseFetch(
       env,
@@ -168,6 +171,9 @@ export async function handleSendInvoice(request, env, invoiceId) {
   // Load client
   const client = await loadClient(env, clientId, { requestId });
 
+  // Invoices & PDFs require the Business plan or higher
+  if (!canAccessPlan(client, "business")) return planAccessDenied("business");
+
   // Generate fresh PDF
   const pdfBytes = await generateInvoicePdf(
     client,
@@ -253,6 +259,9 @@ export async function handleDownloadInvoicePdf(request, env, invoiceId) {
 
   const client = await loadClient(env, clientId, { requestId });
   if (!client) return jsonResponse({ success: false, error: "Client not found." }, 404);
+
+  // Invoices & PDFs require the Business plan or higher
+  if (!canAccessPlan(client, "business")) return planAccessDenied("business");
 
   const pdfBytes = await generateInvoicePdf(client, invoice, items, customer);
 

@@ -12,6 +12,8 @@ import { verifySupabaseJwt, resolveClientId } from "../lib/auth.js";
 import { supabaseFetch } from "../lib/supabase.js";
 import { rowsToCsv } from "../lib/csv.js";
 import { EXPORTABLE_TABLES, CORS_HEADERS } from "../config/constants.js";
+import { loadClient } from "../services/clientService.js";
+import { canAccessPlan, planAccessDenied } from "../lib/planAccess.js";
 
 /**
  * GET /api/export/:table
@@ -33,6 +35,11 @@ export async function handleExport(request, env, table) {
   if (!clientId) {
     return jsonResponse({ success: false, error: "No client account linked to this login." }, 403);
   }
+
+  // Reports & Exports require the Business plan or higher
+  const client = await loadClient(env, clientId, { requestId });
+  if (!client) return jsonResponse({ success: false, error: "Client not found." }, 404);
+  if (!canAccessPlan(client, "business")) return planAccessDenied("business");
 
   // Validate export table
   const config = EXPORTABLE_TABLES[table];

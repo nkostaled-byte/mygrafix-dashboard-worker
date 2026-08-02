@@ -11,8 +11,10 @@ import { jsonResponse } from "../lib/responses.js";
 import { parseJsonBody, generateRequestId, generateReference, mapResourceFields } from "../lib/utils.js";
 import { verifySupabaseJwt, resolveUserRole } from "../lib/auth.js";
 import { supabaseFetch, supabaseAdminCreateUser } from "../lib/supabase.js";
-import { ALLOWED_DASHBOARD_RESOURCES } from "../config/constants.js";
+import { ALLOWED_DASHBOARD_RESOURCES, RESOURCE_MIN_PLAN, FEATURE_MIN_PLAN } from "../config/constants.js";
 import { findOrCreateCustomer } from "../services/customerService.js";
+import { loadClient } from "../services/clientService.js";
+import { getEffectivePlan, getPlanTier, planAccessDenied } from "../lib/planAccess.js";
 
 // ==================================================
 // AUTHENTICATION HELPER
@@ -25,7 +27,17 @@ async function authenticateDashboardRequest(request, env) {
   const resolved = await resolveUserRole(env, claims.sub);
   if (!resolved) return { error: jsonResponse({ success: false, error: "No client account linked to this login." }, 403) };
 
-  return { claims, clientId: resolved.clientId, role: resolved.role };
+  const client = await loadClient(env, resolved.clientId);
+  const plan = getEffectivePlan(client);
+  return { claims, clientId: resolved.clientId, role: resolved.role, client, plan, planTier: getPlanTier(plan) };
+}
+
+/**
+ * Plan-gating guard. Returns a 403 jsonResponse if `auth.plan` does not meet
+ * `minPlan`, otherwise returns null (allowed).
+ */
+function assertPlan(auth, minPlan) {
+  return auth.planTier >= getPlanTier(minPlan) ? null : planAccessDenied(minPlan);
 }
 
 // ==================================================
@@ -319,6 +331,8 @@ async function handleDashboardDelete(request, env, resource, id) {
 async function handleDashboardMetrics(request, env) {
   const auth = await authenticateDashboardRequest(request, env);
   if (auth.error) return auth.error;
+  const planBlocked = assertPlan(auth, FEATURE_MIN_PLAN.metrics);
+  if (planBlocked) return planBlocked;
   const { clientId } = auth;
 
   const [products, customers, bookings, orders, invoices, submissions] = await Promise.all([
@@ -436,6 +450,9 @@ async function handleTeamInvite(request, env) {
     return jsonResponse({ success: false, error: "Only the business owner or an admin can invite team members." }, 403);
   }
 
+  const planBlocked = assertPlan(auth, FEATURE_MIN_PLAN.team_invite);
+  if (planBlocked) return planBlocked;
+
   const payload = await parseJsonBody(request);
   if (!payload) return jsonResponse({ success: false, error: "Invalid or missing JSON body." }, 400);
 
@@ -524,6 +541,8 @@ export async function handleDashboardRoute(request, env, url) {
     if (auth.role === "staff" && !STAFF_ALLOWED_RESOURCES.has(resource)) {
       return jsonResponse({ success: false, error: "Insufficient permissions." }, 403);
     }
+    const planBlocked = assertPlan(auth, RESOURCE_MIN_PLAN[resource] || "starter");
+    if (planBlocked) return planBlocked;
     return await handleDashboardUpdate(request, env, resource, id);
   }
 
@@ -536,6 +555,8 @@ export async function handleDashboardRoute(request, env, url) {
     if (auth.role === "staff" && !STAFF_ALLOWED_RESOURCES.has(resource)) {
       return jsonResponse({ success: false, error: "Insufficient permissions." }, 403);
     }
+    const planBlocked = assertPlan(auth, RESOURCE_MIN_PLAN[resource] || "starter");
+    if (planBlocked) return planBlocked;
     if (request.method === "PUT") return await handleDashboardUpdate(request, env, resource, id);
     if (request.method === "DELETE") return await handleDashboardDelete(request, env, resource, id);
     return jsonResponse({ success: false, error: "Method not allowed." }, 405);
@@ -554,6 +575,8 @@ export async function handleDashboardRoute(request, env, url) {
     if (auth.role === "staff" && !STAFF_ALLOWED_RESOURCES.has(resource)) {
       return jsonResponse({ success: false, error: "Insufficient permissions." }, 403);
     }
+    const planBlocked = assertPlan(auth, RESOURCE_MIN_PLAN[resource] || "starter");
+    if (planBlocked) return planBlocked;
 
     if (request.method === "GET") return await handleDashboardList(request, env, resource);
     if (request.method === "POST") return await handleDashboardCreate(request, env, resource);

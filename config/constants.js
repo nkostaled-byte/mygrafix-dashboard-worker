@@ -102,6 +102,34 @@ export const ALLOWED_DASHBOARD_RESOURCES = [
 ];
 
 // ==================================================
+// PLAN GATING
+// ==================================================
+
+// Minimum subscription plan required to access each dashboard resource.
+// Mirrors the plan feature tiers shown on the pricing page.
+export const RESOURCE_MIN_PLAN = {
+  products: "starter",
+  services: "starter",
+  customers: "starter",
+  bookings: "starter",
+  orders: "starter",
+  submissions: "starter",
+  gallery: "business",
+  reviews: "business",
+  staff: "business",
+  team_members: "business",
+  invoices: "business",
+  clients: "starter",
+};
+
+// Minimum plan for miscellaneous dashboard features not tied to a resource.
+export const FEATURE_MIN_PLAN = {
+  metrics: "starter", // Basic Analytics (Overview + Analytics pages)
+  team_invite: "business", // Team Members & Staff Access
+  csv_export: "business", // Reports & Exports
+};
+
+// ==================================================
 // PDF CONSTANTS
 // ==================================================
 

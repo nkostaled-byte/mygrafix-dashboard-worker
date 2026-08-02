@@ -202,6 +202,22 @@ async function authenticateBillingRequest(request, env) {
   return { claims, clientId: resolved.clientId, role: resolved.role };
 }
 
+/**
+ * Read-only auth for GET /api/paystack/status. Any authenticated member
+ * (owner, admin or staff) may view the workspace's plan so the dashboard UI
+ * can render plan-based feature gating correctly.
+ */
+async function authenticateStatusRequest(request, env) {
+  const claims = await verifySupabaseJwt(request, env);
+  if (!claims) return { error: jsonResponse({ success: false, error: "Unauthorized." }, 401) };
+
+  const resolved = await resolveUserRole(env, claims.sub);
+  if (!resolved) {
+    return { error: jsonResponse({ success: false, error: "No client account linked to this login." }, 403) };
+  }
+  return { claims, clientId: resolved.clientId, role: resolved.role };
+}
+
 async function loadClient(env, clientId) {
   const rows = await supabaseFetch(env, `clients?client_id=eq.${encodeURIComponent(clientId)}&select=*`);
   return rows && rows.length ? rows[0] : null;
@@ -331,9 +347,12 @@ async function resolvePlanByCode(env, planCode, requestId) {
  * Activate (or refresh) a product subscription on the client row.
  * OS and hosting each have their own set of columns.
  */
-async function updateProductSubscription(env, client, product, planId, subscription, requestId, months = 1) {
+async function updateProductSubscription(env, client, product, planId, subscription, requestId, months = 1, preserveExpiry = false) {
   const startedAt = subscription?.started_at || new Date().toISOString();
-  const expiresAt = new Date(Date.now() + MONTH_MS * months).toISOString();
+  const expiresAt = preserveExpiry
+    ? (product === "hosting" ? client.hosting_expires_at : client.plan_expires_at) ||
+      new Date(Date.now() + MONTH_MS * months).toISOString()
+    : new Date(Date.now() + MONTH_MS * months).toISOString();
   const patch = {};
 
   if (product === "hosting") {
@@ -346,8 +365,6 @@ async function updateProductSubscription(env, client, product, planId, subscript
     patch.plan = planId;
     patch.plan_started_at = startedAt;
     patch.plan_expires_at = expiresAt;
-    patch.paystack_pending_reference = null;
-    patch.paystack_pending_plan = null;
     if (subscription?.subscription_code) patch.paystack_subscription_code = subscription.subscription_code;
     if (subscription?.plan_code) patch.paystack_plan_code = subscription.plan_code;
   }
@@ -515,22 +532,72 @@ export async function handlePaystackVerify(request, env) {
       return jsonResponse({ success: false, error: `Payment not completed (status: ${txn.status || "unknown"}).` }, 400);
     }
 
-    // Resolve plan id + product from the Paystack plan_code first, then fall
-    // back to the stored pending plan, then to the transaction plan name.
+    // Resolve plan id + product for this payment. Paystack's transaction verify
+    // response can omit the plan (txn.plan == null) for subscription charges, and
+    // the webhook may already have activated this subscription (and cleared the
+    // pending checkout) before the browser redirected here. Fall back in order:
+    //   1. plan_code on the transaction
+    //   2. the stored pending plan from checkout (product inferred from catalogs)
+    //   3. the Paystack subscription record (also gives the billing interval)
+    //   4. the plan name on the transaction
+    //   5. the client's current subscription state (already activated by webhook)
     const planCode = txn.plan?.plan_code || null;
     let resolved = planCode ? await resolvePlanByCode(env, planCode, requestId) : null;
     let planId = resolved?.planId || null;
     let product = resolved?.product || "os";
-    if (!planId) planId = client.paystack_pending_plan;
+    let interval = txn.plan?.interval || null;
+
+    if (!planId) {
+      planId = client.paystack_pending_plan;
+      if (planId) product = getPlanById("hosting", planId) ? "hosting" : "os";
+    }
+
+    if ((!planId || !interval) && txn.subscription?.subscription_code) {
+      try {
+        const sub = await paystackRequest(
+          env,
+          "GET",
+          `/subscription/${encodeURIComponent(txn.subscription.subscription_code)}`
+        );
+        interval = interval || sub?.plan?.interval || null;
+        const subCode = sub?.plan?.plan_code || null;
+        if (subCode) {
+          resolved = await resolvePlanByCode(env, subCode, requestId);
+          planId = resolved?.planId || planId;
+          if (resolved?.product) product = resolved.product;
+        }
+      } catch (err) {
+        console.error(`[${requestId}] Subscription plan lookup error:`, err.message);
+      }
+    }
+
     if (!planId && txn.plan?.name) {
       const detectedProduct = String(txn.plan.name).includes("Hosting") ? "hosting" : "os";
       planId = planIdFromName(txn.plan.name, detectedProduct);
       if (planId) product = detectedProduct;
     }
+
+    if (!planId && client.paystack_subscription_code) {
+      product = "os";
+      planId = client.plan || null;
+    }
+    if (!planId && client.hosting_subscription_code) {
+      product = "hosting";
+      planId = client.hosting_plan || null;
+    }
+
     if (!planId) return jsonResponse({ success: false, error: "Could not determine plan for this payment." }, 400);
 
-    const months = billingMonths(txn.plan?.interval === YEARLY_INTERVAL ? "yearly" : "monthly");
+    const months = billingMonths(interval === YEARLY_INTERVAL ? "yearly" : "monthly");
     const subscription = txn.subscription || {};
+
+    // If we don't know the billing interval but the webhook already activated a
+    // subscription for this product, keep its (correct) expiry instead of
+    // overwriting with a monthly estimate.
+    const preserveExpiry =
+      !interval &&
+      (product === "hosting" ? Boolean(client.hosting_subscription_code) : Boolean(client.paystack_subscription_code));
+
     await disablePreviousSubscription(env, client, product, subscription.subscription_code, requestId);
     await updateProductSubscription(env, client, product, planId, {
       customer_code: txn.customer?.customer_code || client.paystack_customer_code,
@@ -538,7 +605,7 @@ export async function handlePaystackVerify(request, env) {
       subscription_code: subscription.subscription_code,
       plan_code: planCode || undefined,
       started_at: txn.paid_at || new Date().toISOString(),
-    }, requestId, months);
+    }, requestId, months, preserveExpiry);
 
     await recordSubscription(env, clientId, product, planId, {
       reference,
@@ -565,7 +632,7 @@ export async function handlePaystackVerify(request, env) {
 
 export async function handlePaystackStatus(request, env) {
   const requestId = generateRequestId();
-  const auth = await authenticateBillingRequest(request, env);
+  const auth = await authenticateStatusRequest(request, env);
   if (auth.error) return auth.error;
   const { clientId } = auth;
 
