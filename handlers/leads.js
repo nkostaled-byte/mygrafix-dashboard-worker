@@ -171,7 +171,7 @@ async function handleCreateLead(request, env) {
   const payload = await parseJsonBody(request);
   if (!payload) return jsonResponse({ success: false, error: "Invalid or missing JSON body." }, 400);
 
-  const body = await buildLeadInsert(env, clientId, payload);
+  const body = await buildLeadPayload(env, clientId, payload);
 
   // Persist audit-derived score when supplied
   if (payload.audit) {
