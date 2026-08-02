@@ -9,7 +9,7 @@
 
 import { jsonResponse } from "../lib/responses.js";
 import { parseJsonBody, generateReference, generateRequestId } from "../lib/utils.js";
-import { verifySupabaseJwt, resolveClientId } from "../lib/auth.js";
+import { verifySupabaseJwt, resolveUserRole } from "../lib/auth.js";
 import { supabaseFetch } from "../lib/supabase.js";
 import { clientHasNoData } from "../services/submissionService.js";
 
@@ -17,7 +17,7 @@ import { clientHasNoData } from "../services/submissionService.js";
  * GET /api/claim-account/status
  *
  * Lightweight check: is the authenticated user linked to a business?
- * Returns { linked: boolean, clientId: string | null, businessName: string | null }
+ * Returns { linked: boolean, clientId: string | null, businessName: string | null, role: string | null }
  */
 export async function handleClaimStatus(request, env) {
   const claims = await verifySupabaseJwt(request, env);
@@ -37,6 +37,23 @@ export async function handleClaimStatus(request, env) {
       linked: true,
       clientId: clients[0].client_id,
       businessName: clients[0].business_name,
+      role: "owner",
+    });
+  }
+
+  const teamRows = await supabaseFetch(
+    env,
+    `team_members?auth_user_id=eq.${encodeURIComponent(authUserId)}&active=eq.true&select=client_id,role&limit=1`,
+    { requestId: generateRequestId() }
+  );
+
+  if (teamRows && teamRows.length) {
+    return jsonResponse({
+      success: true,
+      linked: true,
+      clientId: teamRows[0].client_id,
+      businessName: null,
+      role: teamRows[0].role || "staff",
     });
   }
 
@@ -45,6 +62,7 @@ export async function handleClaimStatus(request, env) {
     linked: false,
     clientId: null,
     businessName: null,
+    role: null,
   });
 }
 
@@ -234,10 +252,15 @@ export async function handleGetClientSettings(request, env) {
 
   // Resolve the client exactly like the dashboard handlers do — supports both
   // client owners (clients.auth_user_id) and linked team members.
-  const clientId = await resolveClientId(env, claims.sub);
-  if (!clientId) {
+  const resolved = await resolveUserRole(env, claims.sub);
+  if (!resolved) {
     return jsonResponse({ success: false, error: "No client account linked to this login." }, 404);
   }
+  // Settings are owner/admin only — staff roles are excluded
+  if (resolved.role === "staff") {
+    return jsonResponse({ success: false, error: "Insufficient permissions." }, 403);
+  }
+  const clientId = resolved.clientId;
 
   // Use select=* so a missing column (e.g. a not-yet-applied migration) never
   // fails the whole request — PostgREST only returns columns that exist.
@@ -285,10 +308,15 @@ export async function handleUpdateClientSettings(request, env) {
   const claims = await verifySupabaseJwt(request, env);
   if (!claims) return jsonResponse({ success: false, error: "Unauthorized." }, 401);
 
-  const clientId = await resolveClientId(env, claims.sub);
-  if (!clientId) {
+  const resolved = await resolveUserRole(env, claims.sub);
+  if (!resolved) {
     return jsonResponse({ success: false, error: "No client account linked to this login." }, 403);
   }
+  // Settings are owner/admin only — staff roles are excluded
+  if (resolved.role === "staff") {
+    return jsonResponse({ success: false, error: "Insufficient permissions." }, 403);
+  }
+  const clientId = resolved.clientId;
 
   const clients = await supabaseFetch(
     env,

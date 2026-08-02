@@ -9,8 +9,8 @@
 
 import { jsonResponse } from "../lib/responses.js";
 import { parseJsonBody, generateRequestId, generateReference, mapResourceFields } from "../lib/utils.js";
-import { verifySupabaseJwt, resolveClientId } from "../lib/auth.js";
-import { supabaseFetch } from "../lib/supabase.js";
+import { verifySupabaseJwt, resolveUserRole } from "../lib/auth.js";
+import { supabaseFetch, supabaseAdminCreateUser } from "../lib/supabase.js";
 import { ALLOWED_DASHBOARD_RESOURCES } from "../config/constants.js";
 import { findOrCreateCustomer } from "../services/customerService.js";
 
@@ -22,10 +22,10 @@ async function authenticateDashboardRequest(request, env) {
   const claims = await verifySupabaseJwt(request, env);
   if (!claims) return { error: jsonResponse({ success: false, error: "Unauthorized." }, 401) };
 
-  const clientId = await resolveClientId(env, claims.sub);
-  if (!clientId) return { error: jsonResponse({ success: false, error: "No client account linked to this login." }, 403) };
+  const resolved = await resolveUserRole(env, claims.sub);
+  if (!resolved) return { error: jsonResponse({ success: false, error: "No client account linked to this login." }, 403) };
 
-  return { claims, clientId };
+  return { claims, clientId: resolved.clientId, role: resolved.role };
 }
 
 // ==================================================
@@ -105,6 +105,21 @@ const KNOWN_COLUMNS = {
   team_members: ["client_id", "auth_user_id", "name", "email", "role", "active"],
   clients: ["client_id", "auth_user_id", "business_name", "owner_email", "reply_email", "active", "logo_url", "primary_color", "secondary_color", "hero_title", "hero_subtitle", "phone", "address", "opening_hours", "business_type", "claim_code", "bank_name", "bank_account_name", "bank_account_number", "bank_branch_code", "payment_instructions"],
 };
+
+/**
+ * Role-based access control.
+ * `staff` team members can use operational resources (POS, inventory, orders,
+ * customers, services, bookings, gallery, reviews, forms) but NOT admin areas
+ * (invoices/billing, team management, client settings, clients).
+ */
+const STAFF_ALLOWED_RESOURCES = new Set([
+  "products", "orders", "customers", "services", "bookings",
+  "staff", "gallery", "reviews", "submissions",
+]);
+
+function isAdmin(role) {
+  return role === "owner" || role === "admin";
+}
 
 /**
  * Sanitize a payload to only include known database columns for the given resource.
@@ -395,6 +410,93 @@ function buildMonthlyRevenue(orders) {
 }
 
 // ==================================================
+// TEAM MEMBER INVITES
+// ==================================================
+
+function generateTempPassword() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+  const bytes = new Uint8Array(10);
+  crypto.getRandomValues(bytes);
+  let secret = "";
+  for (const byte of bytes) secret += alphabet[byte % alphabet.length];
+  return `MGOS-${secret}`;
+}
+
+/**
+ * POST /api/dashboard/team_members/invite
+ * Owner/admin only. Creates a Supabase Auth account (confirmed email, temp
+ * password) and links it to a team_members row for the current client.
+ */
+async function handleTeamInvite(request, env) {
+  const auth = await authenticateDashboardRequest(request, env);
+  if (auth.error) return auth.error;
+  const { clientId, role } = auth;
+
+  if (!isAdmin(role)) {
+    return jsonResponse({ success: false, error: "Only the business owner or an admin can invite team members." }, 403);
+  }
+
+  const payload = await parseJsonBody(request);
+  if (!payload) return jsonResponse({ success: false, error: "Invalid or missing JSON body." }, 400);
+
+  const email = String(payload.email || "").trim().toLowerCase();
+  const name = String(payload.name || "").trim();
+  const memberRole = String(payload.role || "staff").trim();
+
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return jsonResponse({ success: false, error: "A valid email address is required." }, 400);
+  }
+  if (!name) {
+    return jsonResponse({ success: false, error: "A name is required." }, 400);
+  }
+  if (!["admin", "staff"].includes(memberRole)) {
+    return jsonResponse({ success: false, error: "Role must be 'admin' or 'staff'." }, 400);
+  }
+
+  // Create (or fetch) the Supabase Auth user
+  const tempPassword = generateTempPassword();
+  let userId;
+  try {
+    const { user } = await supabaseAdminCreateUser(env, { email, password: tempPassword, fullName: name });
+    userId = user.id;
+  } catch (err) {
+    return jsonResponse({ success: false, error: err.message || "Failed to create account." }, 400);
+  }
+
+  // Check they aren't already a team member of this client
+  const existing = await supabaseFetch(
+    env,
+    `team_members?client_id=eq.${encodeURIComponent(clientId)}&auth_user_id=eq.${encodeURIComponent(userId)}&select=id`
+  );
+  if (existing && existing.length) {
+    return jsonResponse({ success: false, error: "This person is already a member of your team." }, 409);
+  }
+
+  const [member] = await supabaseFetch(env, "team_members", {
+    method: "POST",
+    body: JSON.stringify({
+      client_id: clientId,
+      auth_user_id: userId,
+      name,
+      email,
+      role: memberRole,
+      active: true,
+    }),
+    requestId: generateRequestId(),
+  });
+
+  if (!member) {
+    return jsonResponse({ success: false, error: "Could not save the team member." }, 400);
+  }
+
+  const mapped = mapResourceFields(member, "team_members", "toCamel");
+  return jsonResponse({
+    success: true,
+    data: { member: mapped, tempPassword },
+  });
+}
+
+// ==================================================
 // MAIN ROUTER
 // ==================================================
 
@@ -408,10 +510,20 @@ export async function handleDashboardRoute(request, env, url) {
     return await handleDashboardMetrics(request, env);
   }
 
+  // /api/dashboard/team_members/invite
+  if (request.method === "POST" && url.pathname === "/api/dashboard/team_members/invite") {
+    return await handleTeamInvite(request, env);
+  }
+
   // /api/dashboard/:resource/:id/status
   const statusMatch = url.pathname.match(/^\/api\/dashboard\/([a-z_-]+)\/([0-9a-fA-F-]+)\/status$/);
   if (statusMatch && request.method === "PUT") {
     const [, resource, id] = statusMatch;
+    const auth = await authenticateDashboardRequest(request, env);
+    if (auth.error) return auth.error;
+    if (auth.role === "staff" && !STAFF_ALLOWED_RESOURCES.has(resource)) {
+      return jsonResponse({ success: false, error: "Insufficient permissions." }, 403);
+    }
     return await handleDashboardUpdate(request, env, resource, id);
   }
 
@@ -419,6 +531,11 @@ export async function handleDashboardRoute(request, env, url) {
   const idMatch = url.pathname.match(/^\/api\/dashboard\/([a-z_-]+)\/([0-9a-fA-F-]+)$/);
   if (idMatch) {
     const [, resource, id] = idMatch;
+    const auth = await authenticateDashboardRequest(request, env);
+    if (auth.error) return auth.error;
+    if (auth.role === "staff" && !STAFF_ALLOWED_RESOURCES.has(resource)) {
+      return jsonResponse({ success: false, error: "Insufficient permissions." }, 403);
+    }
     if (request.method === "PUT") return await handleDashboardUpdate(request, env, resource, id);
     if (request.method === "DELETE") return await handleDashboardDelete(request, env, resource, id);
     return jsonResponse({ success: false, error: "Method not allowed." }, 405);
@@ -430,6 +547,12 @@ export async function handleDashboardRoute(request, env, url) {
     const [, resource] = listMatch;
     if (!ALLOWED_DASHBOARD_RESOURCES.includes(resource)) {
       return jsonResponse({ success: false, error: `Unknown resource: ${resource}` }, 400);
+    }
+
+    const auth = await authenticateDashboardRequest(request, env);
+    if (auth.error) return auth.error;
+    if (auth.role === "staff" && !STAFF_ALLOWED_RESOURCES.has(resource)) {
+      return jsonResponse({ success: false, error: "Insufficient permissions." }, 403);
     }
 
     if (request.method === "GET") return await handleDashboardList(request, env, resource);
