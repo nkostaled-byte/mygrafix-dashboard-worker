@@ -111,7 +111,7 @@ const HOSTING_PLANS = [
     yearlyPrice: 79,
     monthlyBillingText: "Billed monthly",
     yearlyBillingText: "R948 billed annually",
-    features: ["1 Website", "20GB SSD Storage", "Free SSL Certificate", "Business Email", "Basic Support"],
+    features: ["1 Website", "Unlimited file storage", "Free SSL Certificate", "Business Email", "Basic Support"],
     includedFromPrevious: "",
   },
   {
@@ -126,7 +126,7 @@ const HOSTING_PLANS = [
     isPopular: true,
     features: [
       "Unlimited Websites",
-      "100GB SSD Storage",
+      "Unlimited file storage",
       "Free SSL Certificates",
       "Business Email",
       "Daily Backups",
@@ -407,6 +407,23 @@ async function deactivateProduct(env, clientId, product, requestId) {
     body: JSON.stringify(patch),
     requestId,
   });
+
+  // Keep the subscriptions history table in sync: mark the product's active
+  // rows as cancelled so a cancel actually reflects in Supabase.
+  try {
+    await supabaseFetch(
+      env,
+      `subscriptions?client_id=eq.${encodeURIComponent(clientId)}&product=eq.${product}&status=eq.active`,
+      {
+        method: "PATCH",
+        prefer: "return=minimal",
+        body: JSON.stringify({ status: "cancelled" }),
+        requestId,
+      }
+    );
+  } catch (err) {
+    console.error(`[${requestId}] Marking ${product} subscriptions cancelled failed:`, err.message);
+  }
 }
 
 /**
@@ -425,6 +442,56 @@ async function disablePreviousSubscription(env, client, product, newSubscription
   } catch (err) {
     console.error(`[${requestId}] Disabling previous ${product} subscription ${currentCode} failed:`, err.message);
   }
+}
+
+/**
+ * Disable every active Paystack subscription that belongs to a product. Plan
+ * switches can leave duplicate subscriptions behind, so cancelling must sweep
+ * them all or the customer keeps being charged. Returns how many were disabled
+ * vs. failed so callers can surface failures instead of silently "succeeding".
+ */
+async function disableProductSubscriptions(env, client, product, requestId) {
+  const customerCode = client.paystack_customer_code;
+  const storedCode =
+    product === "hosting" ? client.hosting_subscription_code : client.paystack_subscription_code;
+
+  const codes = new Set();
+  if (storedCode) codes.add(storedCode);
+
+  if (customerCode) {
+    try {
+      const list = await paystackRequest(
+        env,
+        "GET",
+        `/subscription?customer=${encodeURIComponent(customerCode)}&perPage=100`
+      );
+      const subs = Array.isArray(list) ? list : list?.data || [];
+      for (const sub of subs) {
+        const subProduct = sub?.plan?.plan_code
+          ? (await resolvePlanByCode(env, sub.plan.plan_code, requestId))?.product
+          : String(sub?.plan?.name || "").includes("Hosting")
+            ? "hosting"
+            : "os";
+        if (subProduct === product && sub?.status === "active") codes.add(sub.subscription_code);
+      }
+    } catch (err) {
+      console.error(`[${requestId}] Listing ${product} subscriptions failed:`, err.message);
+    }
+  }
+
+  let disabled = 0;
+  let failed = 0;
+  for (const code of codes) {
+    try {
+      await paystackRequest(env, "POST", `/subscription/${encodeURIComponent(code)}/disable`, { code });
+      disabled++;
+      console.log(`[${requestId}] Disabled ${product} subscription ${code}`);
+    } catch (err) {
+      failed++;
+      console.error(`[${requestId}] Disabling ${product} subscription ${code} failed:`, err.message);
+    }
+  }
+  return { disabled, failed, total: codes.size };
 }
 
 async function recordSubscription(env, clientId, product, planId, payload, requestId, months = 1) {
@@ -643,11 +710,19 @@ export async function handlePaystackStatus(request, env) {
     const now = Date.now();
 
     const osExpires = client.plan_expires_at ? new Date(client.plan_expires_at).getTime() : null;
-    const osActive = Boolean(client.paystack_subscription_code) && osExpires !== null && osExpires > now;
+    // Active when a paid plan is in effect and not yet expired. We deliberately
+    // do NOT require a stored subscription code here: the verify fallback can
+    // activate a plan (webhook already ran) without a retrievable subscription
+    // code, and the UI + plan gating must treat that as an active subscription.
+    const osActive =
+      Boolean(client.plan) &&
+      client.plan !== "starter" &&
+      osExpires !== null &&
+      osExpires > now;
 
     const hostingExpires = client.hosting_expires_at ? new Date(client.hosting_expires_at).getTime() : null;
     const hostingActive =
-      Boolean(client.hosting_subscription_code) && hostingExpires !== null && hostingExpires > now;
+      Boolean(client.hosting_plan) && hostingExpires !== null && hostingExpires > now;
 
     const hostingPlanInfo = getPlanById("hosting", client.hosting_plan);
 
@@ -691,18 +766,20 @@ export async function handlePaystackCancel(request, env) {
     const client = await loadClient(env, clientId);
     if (!client) return jsonResponse({ success: false, error: "Client not found." }, 404);
 
-    const subscriptionCode =
-      product === "hosting" ? client.hosting_subscription_code : client.paystack_subscription_code;
+    const productLabel = product === "hosting" ? "hosting " : "";
 
-    if (subscriptionCode) {
-      try {
-        await paystackRequest(env, "POST", `/subscription/${subscriptionCode}/disable`, {
-          code: subscriptionCode,
-        });
-      } catch (err) {
-        // Ignore if already disabled — still deactivate locally
-        console.error(`[${requestId}] Paystack disable error:`, err.message);
-      }
+    // Disable every active subscription for this product so the customer is
+    // never charged again. If nothing could be disabled, don't pretend the
+    // cancel worked — the customer may still be billed.
+    const sweep = await disableProductSubscriptions(env, client, product, requestId);
+    if (sweep.total > 0 && sweep.disabled === 0 && sweep.failed > 0) {
+      return jsonResponse(
+        {
+          success: false,
+          error: `We couldn't disable your ${productLabel}subscription on Paystack, so payments may still continue. Please try again or contact support.`,
+        },
+        502
+      );
     }
 
     await deactivateProduct(env, clientId, product, requestId);
