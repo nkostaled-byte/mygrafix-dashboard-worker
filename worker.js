@@ -26,6 +26,14 @@ import { handleSearch } from "./handlers/search.js";
 import { handleUpload } from "./handlers/upload.js";
 import { handleCreateOrder } from "./handlers/orders.js";
 import { handleCreateBooking } from "./handlers/bookings.js";
+import {
+  handlePaystackCheckout,
+  handlePaystackVerify,
+  handlePaystackStatus,
+  handlePaystackCancel,
+  handlePaystackWebhook,
+  handlePricing,
+} from "./handlers/paystack.js";
 import { handleCreateInvoice, handleSendInvoice, handleDownloadInvoicePdf } from "./handlers/invoices.js";
 import { handleExport } from "./handlers/export.js";
 import { handleHealth, handleDebugSupabase } from "./handlers/debug.js";
@@ -133,6 +141,31 @@ export default {
       const exportMatch = url.pathname.match(/^\/api\/export\/([a-z_]+)$/);
       if (request.method === "GET" && exportMatch) {
         return await handleExport(request, env, exportMatch[1]);
+      }
+
+      // ---- Paystack subscriptions ----
+      if (request.method === "GET" && url.pathname === "/api/pricing") {
+        return await handlePricing();
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/paystack/checkout") {
+        return await handlePaystackCheckout(request, env);
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/paystack/verify") {
+        return await handlePaystackVerify(request, env);
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/paystack/status") {
+        return await handlePaystackStatus(request, env);
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/paystack/cancel") {
+        return await handlePaystackCancel(request, env);
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/paystack/webhook") {
+        return await handlePaystackWebhook(request, env);
       }
 
       // ---- Form submissions (catch-all POST) ----
