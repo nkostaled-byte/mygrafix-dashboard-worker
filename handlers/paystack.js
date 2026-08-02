@@ -1,12 +1,18 @@
 /**
  * Paystack Subscriptions Handler
  * ================================
- * - POST /api/paystack/checkout    (auth) Start a subscription checkout
- * - GET  /api/paystack/verify      (auth) Verify a transaction & activate plan
- * - GET  /api/paystack/status      (auth) Current plan / subscription state
- * - POST /api/paystack/cancel      (auth) Cancel the active subscription
+ * Supports two independent subscription products per workspace:
+ *   - "os"       (Business OS plans: starter/business/professional/enterprise)
+ *   - "hosting"  (Web hosting plans: hosting-basic/hosting-pro)
+ *
+ * Endpoints:
+ * - POST /api/paystack/checkout    (auth) Start a subscription checkout { product, plan, billing }
+ * - GET  /api/paystack/verify      (auth) Verify a transaction & activate the product
+ * - GET  /api/paystack/status      (auth) Current OS + hosting subscription state
+ * - POST /api/paystack/cancel      (auth) Cancel a product subscription { product }
  * - POST /api/paystack/webhook     (signed) Paystack event notifications
- * - GET  /api/pricing              Public plan list used by the marketing site
+ * - GET  /api/pricing              Public OS plan list
+ * - GET  /api/pricing/hosting      Public hosting plan list
  *
  * Requires env vars:
  *   PAYSTACK_SECRET_KEY  — Paystack secret key (test or live)
@@ -27,7 +33,7 @@ const MONTH_MS = 30 * 24 * 60 * 60 * 1000;
 const SUBSCRIPTION_INTERVAL = "monthly";
 const YEARLY_INTERVAL = "annually";
 
-// Plan catalog — amounts in cents (R99 → 9900). Keep in sync with src/data/pricingData.ts
+// OS plan catalog — amounts are RAND values shown in R. Keep in sync with src/data/pricingData.ts
 const PLANS = [
   {
     id: "starter",
@@ -95,10 +101,52 @@ const PLANS = [
   },
 ];
 
-const PLANS_BY_ID = Object.fromEntries(PLANS.map((p) => [p.id, p]));
+// Web hosting catalog — a separate subscription product for hosted clients.
+const HOSTING_PLANS = [
+  {
+    id: "hosting-basic",
+    name: "Basic Hosting",
+    tagline: "For single websites & personal sites",
+    monthlyPrice: 99,
+    yearlyPrice: 79,
+    monthlyBillingText: "Billed monthly",
+    yearlyBillingText: "R948 billed annually",
+    features: ["1 Website", "20GB SSD Storage", "Free SSL Certificate", "Business Email", "Basic Support"],
+    includedFromPrevious: "",
+  },
+  {
+    id: "hosting-pro",
+    name: "Pro Hosting",
+    tagline: "For growing sites with higher traffic",
+    monthlyPrice: 199,
+    yearlyPrice: 159,
+    monthlyBillingText: "Billed monthly",
+    yearlyBillingText: "R1,908 billed annually",
+    badge: "Most Popular",
+    isPopular: true,
+    features: [
+      "Unlimited Websites",
+      "100GB SSD Storage",
+      "Free SSL Certificates",
+      "Business Email",
+      "Daily Backups",
+      "Priority Support",
+    ],
+    includedFromPrevious: "Everything in Basic +",
+  },
+];
 
-function amountInCents(planId, billing = "monthly") {
-  const price = billing === "yearly" ? PLANS_BY_ID[planId].yearlyPrice : PLANS_BY_ID[planId].monthlyPrice;
+function getCatalog(product) {
+  return product === "hosting" ? HOSTING_PLANS : PLANS;
+}
+
+function getPlanById(product, planId) {
+  return getCatalog(product).find((p) => p.id === planId) || null;
+}
+
+function amountInCents(product, planId, billing = "monthly") {
+  const plan = getPlanById(product, planId);
+  const price = billing === "yearly" ? plan.yearlyPrice : plan.monthlyPrice;
   return Math.round(price * 100);
 }
 
@@ -178,53 +226,60 @@ async function getOrCreateCustomer(env, client, requestId) {
   return customerCode;
 }
 
-async function getOrCreatePlan(env, planId, billing, requestId) {
-  const plan = PLANS_BY_ID[planId];
-  if (!plan) throw new Error(`Unknown plan: ${planId}`);
+async function getOrCreatePlan(env, product, planId, billing, requestId) {
+  const plan = getPlanById(product, planId);
+  if (!plan) throw new Error(`Unknown ${product} plan: ${planId}`);
 
   const interval = billingInterval(billing);
+  const isHosting = product === "hosting";
 
-  // Allow a manual override via env, e.g. PAYSTACK_PLAN_STARTER_MONTHLY="PLN_xxx"
-  const override = env[`PAYSTACK_PLAN_${plan.id.toUpperCase()}_${billing.toUpperCase()}`];
+  // Allow a manual override via env:
+  //   OS:       PAYSTACK_PLAN_BUSINESS_MONTHLY="PLN_xxx"
+  //   Hosting:  PAYSTACK_PLAN_HOSTING_BASIC_MONTHLY="PLN_xxx"
+  const override = env[
+    `PAYSTACK_PLAN_${isHosting ? "HOSTING_" : ""}${plan.id.toUpperCase()}_${billing.toUpperCase()}`
+  ];
   if (override) {
-    await upsertPlanMapping(env, override, planId, interval, requestId);
+    await upsertPlanMapping(env, override, planId, product, interval, requestId);
     return override;
   }
 
-  const planName = `Business OS ${plan.name} (${CURRENCY} ${billing})`;
+  const planName = isHosting
+    ? `My Grafix Hosting ${plan.name} (${CURRENCY} ${billing})`
+    : `Business OS ${plan.name} (${CURRENCY} ${billing})`;
 
   // Try to reuse an existing plan with the same name
   const existing = await paystackRequest(env, "GET", `/plan?perPage=100`);
   const plans = Array.isArray(existing) ? existing : existing?.data || [];
   const match = plans.find(
-    (p) => p.name === planName && Number(p.amount) === amountInCents(planId, billing) && p.interval === interval
+    (p) => p.name === planName && Number(p.amount) === amountInCents(product, planId, billing) && p.interval === interval
   );
   if (match) {
-    await upsertPlanMapping(env, match.plan_code, planId, interval, requestId);
+    await upsertPlanMapping(env, match.plan_code, planId, product, interval, requestId);
     return match.plan_code;
   }
 
   const created = await paystackRequest(env, "POST", "/plan", {
     name: planName,
-    amount: amountInCents(planId, billing),
+    amount: amountInCents(product, planId, billing),
     interval,
     currency: CURRENCY,
   });
-  await upsertPlanMapping(env, created.plan_code, planId, interval, requestId);
+  await upsertPlanMapping(env, created.plan_code, planId, product, interval, requestId);
   return created.plan_code;
 }
 
 /**
- * Record the Paystack plan_code → Business OS plan_id mapping (idempotent upsert).
+ * Record the Paystack plan_code → (plan_id, product) mapping (idempotent upsert).
  * This is the source of truth for matching webhook events to plans.
  */
-async function upsertPlanMapping(env, planCode, planId, interval, requestId) {
+async function upsertPlanMapping(env, planCode, planId, product, interval, requestId) {
   if (!planCode) return;
   try {
     await supabaseFetch(env, `paystack_plans?on_conflict=plan_code`, {
       method: "POST",
       prefer: "resolution=merge-duplicates,return=minimal",
-      body: JSON.stringify({ plan_code: planCode, plan_id: planId, interval }),
+      body: JSON.stringify({ plan_code: planCode, plan_id: planId, product, interval }),
       requestId,
     });
   } catch (err) {
@@ -233,59 +288,102 @@ async function upsertPlanMapping(env, planCode, planId, interval, requestId) {
 }
 
 /**
- * Resolve a Business OS plan id from a Paystack plan_code (PLN_xxx).
+ * Resolve { planId, product } from a Paystack plan_code (PLN_xxx).
  * Checks the local paystack_plans table first, then falls back to
  * fetching the plan from Paystack and parsing its name.
  */
-async function resolvePlanIdByCode(env, planCode, requestId) {
+async function resolvePlanByCode(env, planCode, requestId) {
   if (!planCode) return null;
 
   try {
     const rows = await supabaseFetch(
       env,
-      `paystack_plans?plan_code=eq.${encodeURIComponent(planCode)}&select=plan_id`
+      `paystack_plans?plan_code=eq.${encodeURIComponent(planCode)}&select=plan_id,product`
     );
-    if (rows && rows.length) return rows[0].plan_id;
+    if (rows && rows.length) return { planId: rows[0].plan_id, product: rows[0].product || "os" };
   } catch (err) {
-    console.error(`[${requestId}] resolvePlanIdByCode lookup error:`, err.message);
+    console.error(`[${requestId}] resolvePlanByCode lookup error:`, err.message);
   }
 
   // Fallback: fetch the plan from Paystack and parse its name
   try {
     const plan = await paystackRequest(env, "GET", `/plan/${encodeURIComponent(planCode)}`);
-    const planId = planIdFromName(plan?.name);
+    const product = String(plan?.name || "").includes("Hosting") ? "hosting" : "os";
+    const planId = planIdFromName(plan?.name, product);
     if (planId) {
       await upsertPlanMapping(
         env,
         planCode,
         planId,
+        product,
         plan?.interval === YEARLY_INTERVAL ? "yearly" : "monthly",
         requestId
       );
-      return planId;
+      return { planId, product };
     }
   } catch (err) {
-    console.error(`[${requestId}] resolvePlanIdByCode Paystack error:`, err.message);
+    console.error(`[${requestId}] resolvePlanByCode Paystack error:`, err.message);
   }
   return null;
 }
 
-async function updateClientPlan(env, clientId, plan, subscription, requestId, months = 1) {
+/**
+ * Activate (or refresh) a product subscription on the client row.
+ * OS and hosting each have their own set of columns.
+ */
+async function updateProductSubscription(env, client, product, planId, subscription, requestId, months = 1) {
   const startedAt = subscription?.started_at || new Date().toISOString();
   const expiresAt = new Date(Date.now() + MONTH_MS * months).toISOString();
-  const patch = {
-    plan,
-    plan_started_at: startedAt,
-    plan_expires_at: expiresAt,
-    paystack_pending_reference: null,
-    paystack_pending_plan: null,
-  };
-  if (subscription) {
-    if (subscription.customer_code) patch.paystack_customer_code = subscription.customer_code;
-    if (subscription.email) patch.paystack_email = subscription.email;
-    if (subscription.subscription_code) patch.paystack_subscription_code = subscription.subscription_code;
-    if (subscription.plan_code) patch.paystack_plan_code = subscription.plan_code;
+  const patch = {};
+
+  if (product === "hosting") {
+    patch.hosting_plan = planId;
+    patch.hosting_started_at = startedAt;
+    patch.hosting_expires_at = expiresAt;
+    if (subscription?.subscription_code) patch.hosting_subscription_code = subscription.subscription_code;
+    if (subscription?.plan_code) patch.hosting_plan_code = subscription.plan_code;
+  } else {
+    patch.plan = planId;
+    patch.plan_started_at = startedAt;
+    patch.plan_expires_at = expiresAt;
+    patch.paystack_pending_reference = null;
+    patch.paystack_pending_plan = null;
+    if (subscription?.subscription_code) patch.paystack_subscription_code = subscription.subscription_code;
+    if (subscription?.plan_code) patch.paystack_plan_code = subscription.plan_code;
   }
+
+  if (subscription?.customer_code) patch.paystack_customer_code = subscription.customer_code;
+  if (subscription?.email) patch.paystack_email = subscription.email;
+
+  await supabaseFetch(env, `clients?client_id=eq.${encodeURIComponent(client.client_id)}`, {
+    method: "PATCH",
+    prefer: "return=minimal",
+    body: JSON.stringify(patch),
+    requestId,
+  });
+}
+
+/**
+ * Set a product subscription to inactive locally.
+ * OS downgrades to starter; hosting clears its fields.
+ */
+async function deactivateProduct(env, clientId, product, requestId) {
+  const patch =
+    product === "hosting"
+      ? {
+          hosting_plan: null,
+          hosting_expires_at: new Date().toISOString(),
+          hosting_subscription_code: null,
+          hosting_plan_code: null,
+        }
+      : {
+          plan: "starter",
+          plan_expires_at: new Date().toISOString(),
+          paystack_subscription_code: null,
+          paystack_plan_code: null,
+          paystack_pending_reference: null,
+          paystack_pending_plan: null,
+        };
   await supabaseFetch(env, `clients?client_id=eq.${encodeURIComponent(clientId)}`, {
     method: "PATCH",
     prefer: "return=minimal",
@@ -294,16 +392,35 @@ async function updateClientPlan(env, clientId, plan, subscription, requestId, mo
   });
 }
 
-async function recordSubscription(env, clientId, plan, payload, requestId, months = 1) {
+/**
+ * Best-effort disable of a product's previous Paystack subscription when a new
+ * one is activated. Paystack has no "change plan" endpoint, so switching plans
+ * means creating a brand-new subscription and disabling the old one — otherwise
+ * the old subscription stays active and keeps billing the customer forever.
+ */
+async function disablePreviousSubscription(env, client, product, newSubscriptionCode, requestId) {
+  const currentCode =
+    product === "hosting" ? client.hosting_subscription_code : client.paystack_subscription_code;
+  if (!currentCode || currentCode === newSubscriptionCode) return;
+  try {
+    await paystackRequest(env, "POST", `/subscription/${currentCode}/disable`, { code: currentCode });
+    console.log(`[${requestId}] Disabled previous ${product} subscription ${currentCode}`);
+  } catch (err) {
+    console.error(`[${requestId}] Disabling previous ${product} subscription ${currentCode} failed:`, err.message);
+  }
+}
+
+async function recordSubscription(env, clientId, product, planId, payload, requestId, months = 1) {
   await supabaseFetch(env, "subscriptions", {
     method: "POST",
     prefer: "return=minimal",
     body: JSON.stringify({
       client_id: clientId,
-      plan,
+      product,
+      plan: planId,
       status: "active",
       currency: payload.currency || CURRENCY,
-      amount: payload.amount || amountInCents(plan),
+      amount: payload.amount || amountInCents(product, planId),
       paystack_reference: payload.reference || null,
       paystack_customer_code: payload.customer_code || null,
       paystack_subscription_code: payload.subscription_code || null,
@@ -328,7 +445,8 @@ export async function handlePaystackCheckout(request, env) {
   if (!payload || !payload.plan) {
     return jsonResponse({ success: false, error: "Missing plan id." }, 400);
   }
-  if (!PLANS_BY_ID[payload.plan]) {
+  const product = payload.product === "hosting" ? "hosting" : "os";
+  if (!getPlanById(product, payload.plan)) {
     return jsonResponse({ success: false, error: "Unknown plan." }, 400);
   }
   const planId = payload.plan;
@@ -339,26 +457,25 @@ export async function handlePaystackCheckout(request, env) {
     if (!client) return jsonResponse({ success: false, error: "Client not found." }, 404);
 
     const customerCode = await getOrCreateCustomer(env, client, requestId);
-    const planCode = await getOrCreatePlan(env, planId, billing, requestId);
+    const planCode = await getOrCreatePlan(env, product, planId, billing, requestId);
     const reference = generateReference("PAY");
 
     // Store pending checkout so /verify can map the transaction to the plan.
-    // paystack_plan_code is the authoritative link to the Paystack plan.
+    // Plan codes are kept per product so one never clobbers the other.
+    const pendingPatch = { paystack_pending_reference: reference, paystack_pending_plan: planId };
+    if (product === "hosting") pendingPatch.hosting_plan_code = planCode;
+    else pendingPatch.paystack_plan_code = planCode;
     await supabaseFetch(env, `clients?client_id=eq.${encodeURIComponent(clientId)}`, {
       method: "PATCH",
       prefer: "return=minimal",
-      body: JSON.stringify({
-        paystack_pending_reference: reference,
-        paystack_pending_plan: planId,
-        paystack_plan_code: planCode,
-      }),
+      body: JSON.stringify(pendingPatch),
       requestId,
     });
 
     const origin = env.APP_URL ? env.APP_URL.replace(/\/$/, "") : new URL(request.url).origin;
     const init = await paystackRequest(env, "POST", "/transaction/initialize", {
       email: client.paystack_email || client.owner_email,
-      amount: amountInCents(planId, billing),
+      amount: amountInCents(product, planId, billing),
       plan: planCode,
       currency: CURRENCY,
       reference,
@@ -367,7 +484,7 @@ export async function handlePaystackCheckout(request, env) {
 
     return jsonResponse({
       success: true,
-      data: { authorization_url: init.authorization_url, reference, access_code: init.access_code },
+      data: { product, authorization_url: init.authorization_url, reference, access_code: init.access_code },
     });
   } catch (err) {
     return jsonResponse({ success: false, error: err.message }, 400);
@@ -398,39 +515,44 @@ export async function handlePaystackVerify(request, env) {
       return jsonResponse({ success: false, error: `Payment not completed (status: ${txn.status || "unknown"}).` }, 400);
     }
 
-    // Resolve the plan id from the Paystack plan_code first, then fall back
-    // to the stored pending plan, then to the transaction plan name.
+    // Resolve plan id + product from the Paystack plan_code first, then fall
+    // back to the stored pending plan, then to the transaction plan name.
     const planCode = txn.plan?.plan_code || null;
-    let planId = planCode ? await resolvePlanIdByCode(env, planCode, requestId) : null;
+    let resolved = planCode ? await resolvePlanByCode(env, planCode, requestId) : null;
+    let planId = resolved?.planId || null;
+    let product = resolved?.product || "os";
     if (!planId) planId = client.paystack_pending_plan;
     if (!planId && txn.plan?.name) {
-      const found = PLANS.find((p) => txn.plan.name.includes(p.name));
-      planId = found?.id;
+      const detectedProduct = String(txn.plan.name).includes("Hosting") ? "hosting" : "os";
+      planId = planIdFromName(txn.plan.name, detectedProduct);
+      if (planId) product = detectedProduct;
     }
     if (!planId) return jsonResponse({ success: false, error: "Could not determine plan for this payment." }, 400);
 
     const months = billingMonths(txn.plan?.interval === YEARLY_INTERVAL ? "yearly" : "monthly");
     const subscription = txn.subscription || {};
-    await updateClientPlan(env, clientId, planId, {
+    await disablePreviousSubscription(env, client, product, subscription.subscription_code, requestId);
+    await updateProductSubscription(env, client, product, planId, {
       customer_code: txn.customer?.customer_code || client.paystack_customer_code,
       email: txn.customer?.email || client.paystack_email,
-      subscription_code: subscription.subscription_code || client.paystack_subscription_code,
-      plan_code: planCode || client.paystack_plan_code,
+      subscription_code: subscription.subscription_code,
+      plan_code: planCode || undefined,
       started_at: txn.paid_at || new Date().toISOString(),
     }, requestId, months);
 
-    await recordSubscription(env, clientId, planId, {
+    await recordSubscription(env, clientId, product, planId, {
       reference,
       currency: txn.currency || CURRENCY,
-      amount: txn.amount || amountInCents(planId),
+      amount: txn.amount || amountInCents(product, planId),
       customer_code: txn.customer?.customer_code,
       subscription_code: subscription.subscription_code,
       started_at: txn.paid_at,
     }, requestId, months);
 
+    const planInfo = getPlanById(product, planId);
     return jsonResponse({
       success: true,
-      data: { plan: planId, plan_name: PLANS_BY_ID[planId].name },
+      data: { product, plan: planId, plan_name: planInfo?.name || planId },
     });
   } catch (err) {
     return jsonResponse({ success: false, error: err.message }, 400);
@@ -452,19 +574,32 @@ export async function handlePaystackStatus(request, env) {
     if (!client) return jsonResponse({ success: false, error: "Client not found." }, 404);
 
     const now = Date.now();
-    const expires = client.plan_expires_at ? new Date(client.plan_expires_at).getTime() : null;
-    const isActive = Boolean(client.paystack_subscription_code) && expires !== null && expires > now;
+
+    const osExpires = client.plan_expires_at ? new Date(client.plan_expires_at).getTime() : null;
+    const osActive = Boolean(client.paystack_subscription_code) && osExpires !== null && osExpires > now;
+
+    const hostingExpires = client.hosting_expires_at ? new Date(client.hosting_expires_at).getTime() : null;
+    const hostingActive =
+      Boolean(client.hosting_subscription_code) && hostingExpires !== null && hostingExpires > now;
+
+    const hostingPlanInfo = getPlanById("hosting", client.hosting_plan);
 
     return jsonResponse({
       success: true,
       data: {
         plan: client.plan || "starter",
-        plan_name: PLANS_BY_ID[client.plan]?.name || client.plan,
+        plan_name: getPlanById("os", client.plan)?.name || client.plan,
         plan_started_at: client.plan_started_at || null,
         plan_expires_at: client.plan_expires_at || null,
-        subscription_active: isActive,
+        subscription_active: osActive,
         has_subscription: Boolean(client.paystack_subscription_code),
         customer_code: client.paystack_customer_code || null,
+        hosting_plan: client.hosting_plan || null,
+        hosting_plan_name: hostingPlanInfo?.name || client.hosting_plan,
+        hosting_started_at: client.hosting_started_at || null,
+        hosting_expires_at: client.hosting_expires_at || null,
+        hosting_subscription_active: hostingActive,
+        hosting_has_subscription: Boolean(client.hosting_subscription_code),
       },
     });
   } catch (err) {
@@ -482,36 +617,35 @@ export async function handlePaystackCancel(request, env) {
   if (auth.error) return auth.error;
   const { clientId } = auth;
 
+  const payload = await parseJsonBody(request).catch(() => null);
+  const product = payload?.product === "hosting" ? "hosting" : "os";
+
   try {
     const client = await loadClient(env, clientId);
     if (!client) return jsonResponse({ success: false, error: "Client not found." }, 404);
 
-    if (client.paystack_subscription_code) {
+    const subscriptionCode =
+      product === "hosting" ? client.hosting_subscription_code : client.paystack_subscription_code;
+
+    if (subscriptionCode) {
       try {
-        await paystackRequest(env, "POST", `/subscription/${client.paystack_subscription_code}/disable`, {
-          code: client.paystack_subscription_code,
+        await paystackRequest(env, "POST", `/subscription/${subscriptionCode}/disable`, {
+          code: subscriptionCode,
         });
       } catch (err) {
-        // Ignore if already disabled — still downgrade locally
+        // Ignore if already disabled — still deactivate locally
         console.error(`[${requestId}] Paystack disable error:`, err.message);
       }
     }
 
-    await supabaseFetch(env, `clients?client_id=eq.${encodeURIComponent(clientId)}`, {
-      method: "PATCH",
-      prefer: "return=minimal",
-      body: JSON.stringify({
-        plan: "starter",
-        plan_expires_at: new Date().toISOString(),
-        paystack_subscription_code: null,
-        paystack_plan_code: null,
-        paystack_pending_reference: null,
-        paystack_pending_plan: null,
-      }),
-      requestId,
-    });
+    await deactivateProduct(env, clientId, product, requestId);
 
-    return jsonResponse({ success: true, data: { plan: "starter", subscription_active: false } });
+    const data =
+      product === "hosting"
+        ? { hosting_plan: null, hosting_subscription_active: false }
+        : { plan: "starter", subscription_active: false };
+
+    return jsonResponse({ success: true, data });
   } catch (err) {
     return jsonResponse({ success: false, error: err.message }, 400);
   }
@@ -537,9 +671,9 @@ async function verifyWebhookSignature(env, rawBody, signatureHeader) {
   return hex === signatureHeader;
 }
 
-function planIdFromName(name) {
+function planIdFromName(name, product = "os") {
   if (!name) return null;
-  const found = PLANS.find((p) => String(name).includes(p.name));
+  const found = getCatalog(product).find((p) => String(name).includes(p.name));
   return found ? found.id : null;
 }
 
@@ -568,8 +702,13 @@ export async function handlePaystackWebhook(request, env) {
     if (eventType === "charge.success") {
       const customerCode = data.customer?.customer_code;
       const planCode = data.plan?.plan_code || null;
-      let planId = planCode ? await resolvePlanIdByCode(env, planCode, requestId) : null;
-      if (!planId) planId = planIdFromName(data.plan?.name);
+      let resolved = planCode ? await resolvePlanByCode(env, planCode, requestId) : null;
+      let planId = resolved?.planId || null;
+      let product = resolved?.product || "os";
+      if (!planId) {
+        product = String(data.plan?.name || "").includes("Hosting") ? "hosting" : "os";
+        planId = planIdFromName(data.plan?.name, product);
+      }
       if (!customerCode || !planId) return ack;
 
       const rows = await supabaseFetch(
@@ -580,24 +719,24 @@ export async function handlePaystackWebhook(request, env) {
       const client = rows[0];
 
       const months = billingMonths(data.plan?.interval === YEARLY_INTERVAL ? "yearly" : "monthly");
-      const expiresAt = new Date(Date.now() + MONTH_MS * months).toISOString();
-      await supabaseFetch(env, `clients?client_id=eq.${encodeURIComponent(client.client_id)}`, {
-        method: "PATCH",
-        prefer: "return=minimal",
-        body: JSON.stringify({
-          plan: planId,
-          plan_started_at: data.paid_at || new Date().toISOString(),
-          plan_expires_at: expiresAt,
-          paystack_plan_code: planCode || client.paystack_plan_code,
-          paystack_subscription_code: data.subscription?.subscription_code || client.paystack_subscription_code,
-        }),
-        requestId,
-      });
+      await disablePreviousSubscription(
+        env,
+        client,
+        product,
+        data.subscription?.subscription_code,
+        requestId
+      );
+      await updateProductSubscription(env, client, product, planId, {
+        subscription_code: data.subscription?.subscription_code,
+        plan_code: planCode || undefined,
+        customer_code: customerCode,
+        started_at: data.paid_at || new Date().toISOString(),
+      }, requestId, months);
 
-      await recordSubscription(env, client.client_id, planId, {
+      await recordSubscription(env, client.client_id, product, planId, {
         reference: data.reference,
         currency: data.currency || CURRENCY,
-        amount: data.amount || amountInCents(planId),
+        amount: data.amount || amountInCents(product, planId),
         customer_code: customerCode,
         subscription_code: data.subscription?.subscription_code,
         started_at: data.paid_at,
@@ -607,8 +746,13 @@ export async function handlePaystackWebhook(request, env) {
     if (eventType === "subscription.create" || eventType === "subscription.charge.success") {
       const customerCode = data.customer?.customer_code;
       const planCode = data.plan?.plan_code || data.plan_code || null;
-      let planId = planCode ? await resolvePlanIdByCode(env, planCode, requestId) : null;
-      if (!planId) planId = planIdFromName(data.plan?.name);
+      let resolved = planCode ? await resolvePlanByCode(env, planCode, requestId) : null;
+      let planId = resolved?.planId || null;
+      let product = resolved?.product || "os";
+      if (!planId) {
+        product = String(data.plan?.name || "").includes("Hosting") ? "hosting" : "os";
+        planId = planIdFromName(data.plan?.name, product);
+      }
       if (!customerCode || !planId) return ack;
 
       const rows = await supabaseFetch(
@@ -619,18 +763,13 @@ export async function handlePaystackWebhook(request, env) {
       const client = rows[0];
 
       const months = billingMonths(data.plan?.interval === YEARLY_INTERVAL ? "yearly" : "monthly");
-      await supabaseFetch(env, `clients?client_id=eq.${encodeURIComponent(client.client_id)}`, {
-        method: "PATCH",
-        prefer: "return=minimal",
-        body: JSON.stringify({
-          plan: planId,
-          plan_started_at: new Date().toISOString(),
-          plan_expires_at: new Date(Date.now() + MONTH_MS * months).toISOString(),
-          paystack_plan_code: planCode || client.paystack_plan_code,
-          paystack_subscription_code: data.subscription_code || client.paystack_subscription_code,
-        }),
-        requestId,
-      });
+      await disablePreviousSubscription(env, client, product, data.subscription_code, requestId);
+      await updateProductSubscription(env, client, product, planId, {
+        subscription_code: data.subscription_code,
+        plan_code: planCode || undefined,
+        customer_code: customerCode,
+        started_at: new Date().toISOString(),
+      }, requestId, months);
     }
 
     if (eventType === "subscription.disable" || eventType === "subscription.not_renew") {
@@ -641,17 +780,26 @@ export async function handlePaystackWebhook(request, env) {
         `clients?paystack_customer_code=eq.${encodeURIComponent(customerCode)}&select=*`
       );
       if (!rows || !rows.length) return ack;
-      await supabaseFetch(env, `clients?client_id=eq.${encodeURIComponent(rows[0].client_id)}`, {
-        method: "PATCH",
-        prefer: "return=minimal",
-        body: JSON.stringify({
-          plan: "starter",
-          plan_expires_at: new Date().toISOString(),
-          paystack_subscription_code: null,
-          paystack_plan_code: null,
-        }),
-        requestId,
-      });
+      const client = rows[0];
+
+      const planCode = data.plan?.plan_code || null;
+      let product = "os";
+      if (planCode) {
+        const resolved = await resolvePlanByCode(env, planCode, requestId);
+        product = resolved?.product || product;
+      } else if (String(data.plan?.name || "").includes("Hosting")) {
+        product = "hosting";
+      }
+
+      // Only deactivate if the disabled subscription is still the current one
+      // for that product. Subscriptions replaced by a plan switch (already
+      // disabled via disablePreviousSubscription) must NOT clobber the new one.
+      const disabledCode = data.subscription_code || data.subscription?.subscription_code || null;
+      const currentCode =
+        product === "hosting" ? client.hosting_subscription_code : client.paystack_subscription_code;
+      if (disabledCode && currentCode && disabledCode !== currentCode) return ack;
+
+      await deactivateProduct(env, client.client_id, product, requestId);
     }
   } catch (err) {
     console.error(`[${requestId}] Paystack webhook error:`, err.message);
@@ -666,4 +814,8 @@ export async function handlePaystackWebhook(request, env) {
 
 export async function handlePricing() {
   return jsonResponse({ success: true, data: PLANS });
+}
+
+export async function handleHostingPricing() {
+  return jsonResponse({ success: true, data: HOSTING_PLANS });
 }

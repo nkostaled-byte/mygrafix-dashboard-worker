@@ -33,6 +33,7 @@ import {
   handlePaystackCancel,
   handlePaystackWebhook,
   handlePricing,
+  handleHostingPricing,
 } from "./handlers/paystack.js";
 import { handleCreateInvoice, handleSendInvoice, handleDownloadInvoicePdf } from "./handlers/invoices.js";
 import { handleExport } from "./handlers/export.js";
@@ -146,6 +147,10 @@ export default {
       // ---- Paystack subscriptions ----
       if (request.method === "GET" && url.pathname === "/api/pricing") {
         return await handlePricing();
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/pricing/hosting") {
+        return await handleHostingPricing();
       }
 
       if (request.method === "POST" && url.pathname === "/api/paystack/checkout") {

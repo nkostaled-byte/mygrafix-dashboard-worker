@@ -11,11 +11,18 @@ ALTER TABLE public.clients
   ADD COLUMN IF NOT EXISTS paystack_plan_code TEXT NULL,
   ADD COLUMN IF NOT EXISTS paystack_email TEXT NULL,
   ADD COLUMN IF NOT EXISTS paystack_pending_reference TEXT NULL,
-  ADD COLUMN IF NOT EXISTS paystack_pending_plan TEXT NULL;
+  ADD COLUMN IF NOT EXISTS paystack_pending_plan TEXT NULL,
+  -- Web hosting product (separate subscription from the OS plan)
+  ADD COLUMN IF NOT EXISTS hosting_plan TEXT NULL,
+  ADD COLUMN IF NOT EXISTS hosting_started_at TIMESTAMPTZ NULL,
+  ADD COLUMN IF NOT EXISTS hosting_expires_at TIMESTAMPTZ NULL,
+  ADD COLUMN IF NOT EXISTS hosting_subscription_code TEXT NULL,
+  ADD COLUMN IF NOT EXISTS hosting_plan_code TEXT NULL;
 
 CREATE TABLE IF NOT EXISTS public.subscriptions (
     id BIGSERIAL PRIMARY KEY,
     client_id TEXT NOT NULL REFERENCES public.clients(client_id) ON DELETE CASCADE,
+    product TEXT NOT NULL DEFAULT 'os',
     plan TEXT NOT NULL DEFAULT 'starter',
     status TEXT NOT NULL DEFAULT 'active',
     currency TEXT NOT NULL DEFAULT 'ZAR',
@@ -33,6 +40,7 @@ CREATE TABLE IF NOT EXISTS public.subscriptions (
 CREATE TABLE IF NOT EXISTS public.paystack_plans (
     plan_code TEXT PRIMARY KEY,
     plan_id TEXT NOT NULL,
+    product TEXT NOT NULL DEFAULT 'os',
     interval TEXT NOT NULL DEFAULT 'monthly',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -41,6 +49,10 @@ CREATE INDEX IF NOT EXISTS idx_subscriptions_client_id ON public.subscriptions (
 CREATE INDEX IF NOT EXISTS idx_subscriptions_sub_code ON public.subscriptions (paystack_subscription_code);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_reference ON public.subscriptions (paystack_reference);
 CREATE INDEX IF NOT EXISTS idx_paystack_plans_plan_id ON public.paystack_plans (plan_id);
+
+-- Backfill for tables that may already exist from a previous run
+ALTER TABLE public.subscriptions ADD COLUMN IF NOT EXISTS product TEXT NOT NULL DEFAULT 'os';
+ALTER TABLE public.paystack_plans ADD COLUMN IF NOT EXISTS product TEXT NOT NULL DEFAULT 'os';
 
 ALTER TABLE public.subscriptions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.paystack_plans ENABLE ROW LEVEL SECURITY;
