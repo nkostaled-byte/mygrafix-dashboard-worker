@@ -54,6 +54,7 @@ export async function handleCreateInvoice(request, env) {
   if (!canAccessPlan(client, "business")) return planAccessDenied("business");
 
   // Resolve customer
+  let customer;
   if (payload.customer.id) {
     const rows = await supabaseFetch(
       env,
