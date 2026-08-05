@@ -195,7 +195,7 @@ async function handleCreateLead(request, env) {
 }
 
 async function buildLeadPayload(env, clientId, payload) {
-  const body = {};
+  const body = { client_id: clientId };
   const fill = (k, v) => {
     if (v !== undefined && v !== null && v !== "") body[k] = v;
   };
