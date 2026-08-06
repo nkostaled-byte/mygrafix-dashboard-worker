@@ -57,6 +57,11 @@ async function handleDashboardList(request, env, resource) {
     path = `${resource}?client_id=eq.${encodeURIComponent(clientId)}&select=*,customer:customers(id,name,email)`;
   }
 
+  // Bookings: pull linked customer/service/staff names for display
+  if (resource === "bookings") {
+    path = `${resource}?client_id=eq.${encodeURIComponent(clientId)}&select=*,customer:customers(id,name,phone),service:services(id,name),staff:staff(id,name)`;
+  }
+
   const orderBy = url.searchParams.get("order");
   if (orderBy) {
     path += `&order=${encodeURIComponent(orderBy)}`;
@@ -77,6 +82,22 @@ async function handleDashboardList(request, env, resource) {
       invoice.clientName = customer?.name || invoice.clientName || "";
       invoice.clientEmail = customer?.email || invoice.clientEmail || "";
       delete invoice.customer;
+    }
+  }
+
+  // Bookings: expose linked customer/service/staff names for the frontend
+  if (resource === "bookings" && mapped.length) {
+    for (const booking of mapped) {
+      const customer = booking.customer || null;
+      const service = booking.service || null;
+      const staff = booking.staff || null;
+      booking.clientName = customer?.name || booking.clientName || "";
+      booking.clientPhone = customer?.phone || booking.clientPhone || "";
+      booking.serviceName = service?.name || booking.serviceName || "";
+      booking.staffName = staff?.name || booking.staffName || "";
+      delete booking.customer;
+      delete booking.service;
+      delete booking.staff;
     }
   }
 
@@ -246,6 +267,48 @@ async function handleDashboardCreate(request, env, resource) {
     delete mappedPayload.client_name;
     delete mappedPayload.client_email;
     delete mappedPayload.amount;
+  }
+
+  if (resource === "bookings") {
+    const clientName = payload.clientName || payload.customerName || "";
+    const clientPhone = payload.clientPhone || "";
+    const serviceId = mappedPayload.service_id || payload.serviceId || "";
+    const staffId = mappedPayload.staff_id || payload.staffId || null;
+    const status = mappedPayload.status || "upcoming";
+
+    // Resolve (or create) the customer so we can store a customer_id FK
+    const customer = await findOrCreateCustomer(env, clientId, {
+      name: clientName,
+      phone: clientPhone || undefined,
+      email: payload.clientEmail || "",
+    });
+
+    // Compute start_time/end_time — prefer explicit ISO, else derive from date+time
+    let startTime = mappedPayload.start_time || payload.startTime || "";
+    if (!startTime && payload.date && payload.time) {
+      startTime = new Date(`${payload.date}T${payload.time}:00`).toISOString();
+    }
+    let durationMinutes = parseInt(payload.durationMinutes, 10) || 30;
+    if (mappedPayload.service_id) {
+      const svc = await supabaseFetch(
+        env,
+        `services?client_id=eq.${encodeURIComponent(clientId)}&id=eq.${encodeURIComponent(mappedPayload.service_id)}&select=duration_minutes`,
+        { requestId: generateRequestId() }
+      );
+      if (svc && svc[0] && svc[0].duration_minutes) {
+        durationMinutes = svc[0].duration_minutes;
+      }
+    }
+    const start = new Date(startTime);
+    const endTime = mappedPayload.end_time || new Date(start.getTime() + durationMinutes * 60000).toISOString();
+
+    mappedPayload.customer_id = customer.id;
+    mappedPayload.service_id = mappedPayload.service_id || null;
+    mappedPayload.staff_id = staffId || null;
+    mappedPayload.start_time = start.toISOString();
+    mappedPayload.end_time = endTime;
+    mappedPayload.status = status;
+    mappedPayload.notes = payload.notes || null;
   }
 
   // ── Sanitize: remove any fields not in the known columns ─────
