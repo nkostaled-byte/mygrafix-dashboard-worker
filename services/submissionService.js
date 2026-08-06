@@ -67,27 +67,36 @@ export async function saveEmailIds(env, submissionId, ids, options = {}) {
 
 /**
  * Log an email send to the email_log table.
+ * This is an audit trail and must never break the surrounding flow:
+ * a failed write is logged and swallowed, not thrown to the caller.
  */
 export async function logEmail(env, data, options = {}) {
   const { clientId, relatedType, relatedId, recipient, subject, resendId } = data;
 
-  await supabaseFetch(
-    env,
-    "email_log",
-    {
-      method: "POST",
-      prefer: "return=minimal",
-      body: JSON.stringify({
-        client_id: clientId,
-        related_type: relatedType,
-        related_id: relatedId,
-        recipient,
-        subject,
-        resend_id: resendId,
-      }),
-      requestId: options.requestId,
-    }
-  );
+  try {
+    await supabaseFetch(
+      env,
+      "email_log",
+      {
+        method: "POST",
+        prefer: "return=minimal",
+        body: JSON.stringify({
+          client_id: clientId,
+          related_type: relatedType,
+          related_id: relatedId,
+          recipient,
+          subject,
+          resend_id: resendId ?? null,
+        }),
+        requestId: options.requestId,
+      }
+    );
+  } catch (err) {
+    console.warn(
+      `[${options.requestId || "?"}] Could not write email_log (non-fatal):`,
+      err?.message || err
+    );
+  }
 }
 
 /**
