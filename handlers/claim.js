@@ -292,6 +292,7 @@ export async function handleGetClientSettings(request, env) {
       primaryColor: raw.primary_color ?? "",
       secondaryColor: raw.secondary_color ?? "",
       ownerEmail: raw.owner_email ?? "",
+      websiteUrl: raw.website_url ?? "",
     },
   });
 }
@@ -338,6 +339,7 @@ export async function handleUpdateClientSettings(request, env) {
     "payment_instructions",
     "logo_url", "primary_color", "secondary_color",
     "reply_email",
+    "website_url",
   ];
 
   // Map camelCase payload keys to snake_case DB columns
@@ -370,6 +372,8 @@ export async function handleUpdateClientSettings(request, env) {
     secondary_color: "secondary_color",
     replyEmail: "reply_email",
     reply_email: "reply_email",
+    websiteUrl: "website_url",
+    website_url: "website_url",
   };
 
   const updates = {};
