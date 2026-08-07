@@ -57,9 +57,9 @@ async function handleDashboardList(request, env, resource) {
     path = `${resource}?client_id=eq.${encodeURIComponent(clientId)}&select=*,customer:customers(id,name,email)`;
   }
 
-  // Bookings: pull linked customer/service/staff names for display
+// Bookings: pull linked customer/service/staff names for display
   if (resource === "bookings") {
-    path = `${resource}?client_id=eq.${encodeURIComponent(clientId)}&select=*,customer:customers(id,name,phone),service:services(id,name),staff:staff(id,name)`;
+    path = `${resource}?client_id=eq.${encodeURIComponent(clientId)}&select=*,customer:customers(id,name,phone),service:services(id,name,price),staff:staff(id,name)`;
   }
 
   const orderBy = url.searchParams.get("order");
@@ -95,6 +95,25 @@ async function handleDashboardList(request, env, resource) {
       booking.clientPhone = customer?.phone || booking.clientPhone || "";
       booking.serviceName = service?.name || booking.serviceName || "";
       booking.staffName = staff?.name || booking.staffName || "";
+      // Fall back to the linked service price when no amount was stored.
+      if (!booking.amount && service?.price != null) {
+        booking.amount = Number(service.price);
+      }
+      // Derive the display date/time from start_time (the DB only stores start_time/end_time)
+      if (booking.startTime && (!booking.date || !booking.time)) {
+        const dt = new Date(booking.startTime);
+        if (!isNaN(dt.getTime())) {
+          if (!booking.date) {
+            const y = dt.getFullYear();
+            const m = String(dt.getMonth() + 1).padStart(2, "0");
+            const d = String(dt.getDate()).padStart(2, "0");
+            booking.date = `${y}-${m}-${d}`;
+          }
+          if (!booking.time) {
+            booking.time = `${String(dt.getHours()).padStart(2, "0")}:${String(dt.getMinutes()).padStart(2, "0")}`;
+          }
+        }
+      }
       delete booking.customer;
       delete booking.service;
       delete booking.staff;
@@ -128,7 +147,7 @@ const KNOWN_COLUMNS = {
   products: ["client_id", "name", "sku", "category_id", "price", "cost_price", "stock_qty", "low_stock_warning", "image_url", "barcode", "variants", "is_hidden"],
   services: ["client_id", "name", "category", "duration_minutes", "price", "description", "image_url", "active"],
   customers: ["client_id", "name", "email", "phone", "notes", "tags"],
-  bookings: ["client_id", "customer_id", "service_id", "staff_id", "start_time", "end_time", "status"],
+  bookings: ["client_id", "customer_id", "service_id", "staff_id", "start_time", "end_time", "status", "notes", "amount"],
   orders: ["client_id", "customer_id", "customer_name", "order_number", "status", "subtotal", "tax", "total", "notes", "is_pos", "payment_method", "items", "items_count"],
   invoices: ["client_id", "customer_id", "order_id", "invoice_number", "status", "subtotal", "tax", "total", "issued_at", "due_at", "pdf_url"],
   staff: ["client_id", "name", "role", "email", "phone", "specialties", "photo_url", "active"],
@@ -309,6 +328,7 @@ async function handleDashboardCreate(request, env, resource) {
     mappedPayload.end_time = endTime;
     mappedPayload.status = status;
     mappedPayload.notes = payload.notes || null;
+    mappedPayload.amount = Number(payload.amount ?? mappedPayload.amount ?? 0);
   }
 
   // ── Sanitize: remove any fields not in the known columns ─────
