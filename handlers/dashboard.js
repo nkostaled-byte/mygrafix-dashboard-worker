@@ -134,6 +134,25 @@ async function handleDashboardList(request, env, resource) {
         product.category = catMap.get(product.categoryId) || "";
       }
     }
+
+    const ordersForSold = await supabaseFetch(
+      env,
+      `orders?client_id=eq.${encodeURIComponent(clientId)}&select=items`
+    );
+    const soldCounts = new Map();
+    for (const order of (ordersForSold || [])) {
+      const items = Array.isArray(order.items) ? order.items : [];
+      for (const item of items) {
+        const key = (item.name || item.productName || "").trim().toLowerCase();
+        if (key) {
+          soldCounts.set(key, (soldCounts.get(key) || 0) + Number(item.quantity || item.qty || 1));
+        }
+      }
+    }
+    for (const product of mapped) {
+      const key = (product.name || "").trim().toLowerCase();
+      product.soldCount = soldCounts.get(key) || 0;
+    }
   }
 
   return jsonResponse({ success: true, data: mapped });
@@ -418,13 +437,15 @@ async function handleDashboardMetrics(request, env) {
   if (planBlocked) return planBlocked;
   const { clientId } = auth;
 
-  const [products, customers, bookings, orders, invoices, submissions] = await Promise.all([
+  const [products, customers, bookings, orders, invoices, submissions, reviews, clientData] = await Promise.all([
     supabaseFetch(env, `products?client_id=eq.${encodeURIComponent(clientId)}&select=id`),
     supabaseFetch(env, `customers?client_id=eq.${encodeURIComponent(clientId)}&select=id`),
     supabaseFetch(env, `bookings?client_id=eq.${encodeURIComponent(clientId)}&select=id,status`),
     supabaseFetch(env, `orders?client_id=eq.${encodeURIComponent(clientId)}&select=id,total,created_at`),
     supabaseFetch(env, `invoices?client_id=eq.${encodeURIComponent(clientId)}&select=id,total,status`),
     supabaseFetch(env, `submissions?client_id=eq.${encodeURIComponent(clientId)}&select=submission_id,status`),
+    supabaseFetch(env, `reviews?client_id=eq.${encodeURIComponent(clientId)}&select=id,rating`),
+    supabaseFetch(env, `clients?id=eq.${encodeURIComponent(clientId)}&select=*`),
   ]);
 
   const totalRevenue = (orders || []).reduce((sum, o) => sum + Number(o.total || 0), 0);
@@ -438,6 +459,39 @@ async function handleDashboardMetrics(request, env) {
     `bookings?client_id=eq.${encodeURIComponent(clientId)}&start_time=gte.${encodeURIComponent(today + "T00:00:00")}&start_time=lte.${encodeURIComponent(today + "T23:59:59")}&select=*&order=start_time.asc`
   );
 
+  const client = (clientData || [])[0] || {};
+  const profileFields = ["business_name", "owner_email", "phone", "address", "logo_url", "hero_title", "hero_subtitle", "business_type", "reply_email"];
+  const filledFields = profileFields.filter(f => {
+    const v = client[f];
+    return v !== null && v !== undefined && String(v).trim() !== "";
+  });
+  const profileCompleteness = Math.round((filledFields.length / profileFields.length) * 100);
+
+  const setupSteps = [
+    (products || []).length > 0,
+    (orders || []).length > 0,
+    (customers || []).length > 0,
+    !!client.business_name,
+    !!client.logo_url,
+    (bookings || []).length > 0,
+  ];
+  const completedSteps = setupSteps.filter(Boolean).length;
+  const setupChecklist = Math.round((completedSteps / setupSteps.length) * 100);
+
+  const reviewList = reviews || [];
+  let customerSatisfaction = 0;
+  if (reviewList.length > 0) {
+    const avgRating = reviewList.reduce((sum, r) => sum + Number(r.rating || 0), 0) / reviewList.length;
+    customerSatisfaction = Math.round((avgRating / 5) * 100);
+  }
+
+  const submissionList = submissions || [];
+  let responseRate = 0;
+  if (submissionList.length > 0) {
+    const responded = submissionList.filter(s => s.status === "replied" || s.status === "read").length;
+    responseRate = Math.round((responded / submissionList.length) * 100);
+  }
+
   const metrics = {
     totalProducts: (products || []).length,
     totalCustomers: (customers || []).length,
@@ -450,6 +504,12 @@ async function handleDashboardMetrics(request, env) {
     todayBookings: todayBookings || [],
     dailySales: buildDailySales(orders || []),
     monthlyRevenue: buildMonthlyRevenue(orders || []),
+    businessHealth: {
+      profileCompleteness,
+      setupChecklist,
+      customerSatisfaction,
+      responseRate,
+    },
   };
 
   return jsonResponse({ success: true, data: metrics });
