@@ -33,8 +33,8 @@ export async function handlePublicSite(url, env) {
 
   // Query each table independently — failures return [] instead of crashing
   const [products, services, staff, reviews, gallery] = await Promise.all([
-    safeQuery(env, `products?client_id=eq.${encodeURIComponent(clientId)}&or=(is_hidden.is.null,is_hidden.eq.false)&select=*&order=name.asc`, requestId),
-    safeQuery(env, `services?client_id=eq.${encodeURIComponent(clientId)}&active=eq.true&select=*&order=name.asc`, requestId),
+    safeQuery(env, `products?client_id=eq.${encodeURIComponent(clientId)}&display_on_website=eq.true&or=(is_hidden.is.null,is_hidden.eq.false)&select=*&order=name.asc`, requestId),
+    safeQuery(env, `services?client_id=eq.${encodeURIComponent(clientId)}&display_on_website=eq.true&active=eq.true&select=*&order=name.asc`, requestId),
     safeQuery(env, `staff?client_id=eq.${encodeURIComponent(clientId)}&active=eq.true&select=*&order=name.asc`, requestId),
     safeQuery(env, `reviews?client_id=eq.${encodeURIComponent(clientId)}&select=*&order=created_at.desc`, requestId),
     safeQuery(env, `gallery?client_id=eq.${encodeURIComponent(clientId)}&select=*&order=created_at.desc`, requestId),

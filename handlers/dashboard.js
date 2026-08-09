@@ -163,8 +163,8 @@ async function handleDashboardList(request, env, resource) {
  * Used to sanitize incoming payloads — unsupported fields are safely ignored.
  */
 const KNOWN_COLUMNS = {
-  products: ["client_id", "name", "sku", "category_id", "price", "cost_price", "stock_qty", "low_stock_warning", "image_url", "barcode", "variants", "is_hidden"],
-  services: ["client_id", "name", "category", "duration_minutes", "price", "description", "image_url", "active"],
+  products: ["client_id", "name", "sku", "category_id", "price", "cost_price", "stock_qty", "low_stock_warning", "image_url", "barcode", "variants", "is_hidden", "display_on_website"],
+  services: ["client_id", "name", "category", "duration_minutes", "price", "description", "image_url", "active", "display_on_website"],
   customers: ["client_id", "name", "email", "phone", "notes", "tags"],
   bookings: ["client_id", "customer_id", "service_id", "staff_id", "start_time", "end_time", "status", "notes", "amount"],
   orders: ["client_id", "customer_id", "customer_name", "order_number", "status", "subtotal", "tax", "total", "notes", "is_pos", "payment_method", "items", "items_count"],
