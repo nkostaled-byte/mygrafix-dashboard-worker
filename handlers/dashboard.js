@@ -445,7 +445,7 @@ async function handleDashboardMetrics(request, env) {
     supabaseFetch(env, `invoices?client_id=eq.${encodeURIComponent(clientId)}&select=id,total,status`),
     supabaseFetch(env, `submissions?client_id=eq.${encodeURIComponent(clientId)}&select=submission_id,status`),
     supabaseFetch(env, `reviews?client_id=eq.${encodeURIComponent(clientId)}&select=id,rating`),
-    supabaseFetch(env, `clients?id=eq.${encodeURIComponent(clientId)}&select=*`),
+    supabaseFetch(env, `clients?client_id=eq.${encodeURIComponent(clientId)}&select=*`),
   ]);
 
   const totalRevenue = (orders || []).reduce((sum, o) => sum + Number(o.total || 0), 0);
