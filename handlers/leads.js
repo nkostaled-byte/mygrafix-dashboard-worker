@@ -389,6 +389,34 @@ async function handleAddNote(req, env, leadId) {
   return jsonResponse({ success: true, data: note || {} });
 }
 
+async function handleUpdateNote(req, env, leadId, noteId) {
+  const ctx = await resolveClient(req, env, MIN_PLAN_CRM);
+  if (ctx.error) return ctx.error;
+  const { clientId } = ctx;
+  const payload = await parseJsonBody(req) || {};
+  const body = {};
+  if (payload.body !== undefined) body.body = payload.body;
+  if (payload.author !== undefined) body.author = payload.author;
+  if (!Object.keys(body).length) return jsonResponse({ success: false, error: "Nothing to update." }, 400);
+  await supabaseFetch(env, `lead_notes?id=eq.${encodeURIComponent(noteId)}&lead_id=eq.${encodeURIComponent(leadId)}&client_id=eq.${encodeURIComponent(clientId)}`, {
+    method: "PATCH",
+    prefer: "return=minimal",
+    body: JSON.stringify(body),
+  });
+  return jsonResponse({ success: true });
+}
+
+async function handleDeleteNote(req, env, leadId, noteId) {
+  const ctx = await resolveClient(req, env, MIN_PLAN_CRM);
+  if (ctx.error) return ctx.error;
+  const { clientId } = ctx;
+  await supabaseFetch(env, `lead_notes?id=eq.${encodeURIComponent(noteId)}&lead_id=eq.${encodeURIComponent(leadId)}&client_id=eq.${encodeURIComponent(clientId)}`, {
+    method: "DELETE",
+    prefer: "return=minimal",
+  });
+  return jsonResponse({ success: true });
+}
+
 async function handleAddActivity(req, env, leadId) {
   const ctx = await resolveClient(req, env, MIN_PLAN_CRM);
   if (ctx.error) return ctx.error;
@@ -517,6 +545,17 @@ async function handleUpdateFollowup(req, env, leadId, followId) {
   if (body.status === "completed") {
     await logActivity(env, clientId, leadId, "followup", "Follow-up completed", "Follow-up marked as completed.");
   }
+  return jsonResponse({ success: true });
+}
+
+async function handleDeleteFollowup(req, env, leadId, followId) {
+  const ctx = await resolveClient(req, env, MIN_PLAN_CRM);
+  if (ctx.error) return ctx.error;
+  const { clientId } = ctx;
+  await supabaseFetch(env, `lead_followups?id=eq.${encodeURIComponent(followId)}&lead_id=eq.${encodeURIComponent(leadId)}&client_id=eq.${encodeURIComponent(clientId)}`, {
+    method: "DELETE",
+    prefer: "return=minimal",
+  });
   return jsonResponse({ success: true });
 }
 
@@ -907,6 +946,7 @@ export async function handleLeadsRoute(req, env, url) {
 
   const Rx = {
     notes: /^\/api\/leads\/([0-9a-fA-F-]+)\/notes$/,
+    noteId: /^\/api\/leads\/([0-9a-fA-F-]+)\/notes\/([0-9a-fA-F-]+)$/,
     activities: /^\/api\/leads\/([0-9a-fA-F-]+)\/activities$/,
     tasks: /^\/api\/leads\/([0-9a-fA-F-]+)\/tasks$/,
     taskId: /^\/api\/leads\/([0-9a-fA-F-]+)\/tasks\/([0-9a-fA-F-]+)$/,
@@ -983,7 +1023,20 @@ export async function handleLeadsRoute(req, env, url) {
   if (tid && method === "DELETE") return await handleTags(req, env, "delete", tid[1]);
 
   const n = path.match(Rx.notes);
-  if (n && method === "POST") return await handleAddNote(req, env, n[1]);
+  if (n) {
+    if (method === "POST") return await handleAddNote(req, env, n[1]);
+    if (method === "GET") {
+      const c = await authzCtx(req, env);
+      if (c.error) return c.error;
+      const rows = await supabaseFetch(env, `lead_notes?lead_id=eq.${encodeURIComponent(n[1])}&client_id=eq.${encodeURIComponent(c.clientId)}&order=created_at.desc`);
+      return jsonResponse({ success: true, data: (rows || []).map(camelObj) });
+    }
+  }
+  const noteId = path.match(Rx.noteId);
+  if (noteId) {
+    if (method === "PUT") return await handleUpdateNote(req, env, noteId[1], noteId[2]);
+    if (method === "DELETE") return await handleDeleteNote(req, env, noteId[1], noteId[2]);
+  }
   const acts = path.match(Rx.activities);
   if (acts) {
     if (method === "GET") { const c = await authzCtx(req, env); return c.error || (await handleListActivities(c, env, acts[1])); }
@@ -1005,7 +1058,10 @@ export async function handleLeadsRoute(req, env, url) {
     if (method === "POST") return await handleAddFollowup(req, env, f[1]);
   }
   const fv = path.match(Rx.followupId);
-  if (fv && method === "PUT") return await handleUpdateFollowup(req, env, fv[1], fv[2]);
+  if (fv) {
+    if (method === "PUT") return await handleUpdateFollowup(req, env, fv[1], fv[2]);
+    if (method === "DELETE") return await handleDeleteFollowup(req, env, fv[1], fv[2]);
+  }
   const st = path.match(Rx.status);
   if (st && method === "PUT") return await handleUpdateLead(req, env, st[1], true);
   const cv = path.match(Rx.convert);
@@ -1016,6 +1072,7 @@ export async function handleLeadsRoute(req, env, url) {
 
 const Rx = {
   notes: /^\/api\/leads\/([0-9a-fA-F-]+)\/notes$/,
+  noteId: /^\/api\/leads\/([0-9a-fA-F-]+)\/notes\/([0-9a-fA-F-]+)$/,
   activities: /^\/api\/leads\/([0-9a-fA-F-]+)\/activities$/,
   tasks: /^\/api\/leads\/([0-9a-fA-F-]+)\/tasks$/,
   taskId: /^\/api\/leads\/([0-9a-fA-F-]+)\/tasks\/([0-9a-fA-F-]+)$/,
