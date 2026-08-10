@@ -81,7 +81,7 @@ function decorateLead(row) {
 const LEAD_SELECT = `*,company:lead_companies(id,name,domain,website,industry,logo_url),contact:lead_contacts(id,first_name,last_name,email,phone,job_title)`;
 
 async function loadLeadDetail(env, clientId, leadId) {
-  const [rows] = await supabaseFetch(
+  const rows = await supabaseFetch(
     env,
     `leads?id=eq.${encodeURIComponent(leadId)}&client_id=eq.${encodeURIComponent(clientId)}&select=${encodeURIComponent(LEAD_SELECT)}`
   );
@@ -725,7 +725,7 @@ async function handleCompanyDetail(req, env, companyId) {
   const ctx = await resolveClient(req, env, MIN_PLAN_CRM);
   if (ctx.error) return ctx.error;
   const { clientId } = ctx;
-  const [rows] = await supabaseFetch(env, `lead_companies?id=eq.${encodeURIComponent(companyId)}&client_id=eq.${encodeURIComponent(clientId)}&select=*`);
+  const rows = await supabaseFetch(env, `lead_companies?id=eq.${encodeURIComponent(companyId)}&client_id=eq.${encodeURIComponent(clientId)}&select=*`);
   if (!rows || !rows.length) return jsonResponse({ success: false, error: "Company not found." }, 404);
   const contacts = await supabaseFetch(env, `lead_contacts?company_id=eq.${encodeURIComponent(companyId)}&order=created_at.desc`);
   const leads = await supabaseFetch(env, `leads?company_id=eq.${encodeURIComponent(companyId)}&client_id=eq.${encodeURIComponent(clientId)}&select=${encodeURIComponent(LEAD_SELECT)}&order=created_at.desc`);
