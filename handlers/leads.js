@@ -297,6 +297,7 @@ async function handleUpdateLead(req, env, leadId, statusOnly) {
       return jsonResponse({ success: false, error: `Status must be one of: ${ALLOWED_STATUSES.join(", ")}` }, 400);
     }
     body.status = payload.status;
+    body.stage = payload.status.charAt(0).toUpperCase() + payload.status.slice(1);
     if (payload.status === "won") body.won_at = new Date().toISOString();
   }
   if (payload.stage !== undefined) body.stage = payload.stage;
