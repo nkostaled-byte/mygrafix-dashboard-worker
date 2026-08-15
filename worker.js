@@ -40,6 +40,7 @@ import { handleExport } from "./handlers/export.js";
 import { handleLeadsRoute } from "./handlers/leads.js";
 import { handleHealth, handleDebugSupabase } from "./handlers/debug.js";
 import { handleAiChat } from "./handlers/ai.js";
+import { handleAiConfirm } from "./handlers/ai-confirm.js";
 
 export default {
   async fetch(request, env) {
@@ -183,6 +184,11 @@ export default {
       // ---- AI Chat ----
       if (request.method === "POST" && url.pathname === "/api/ai/chat") {
         return await handleAiChat(request, env);
+      }
+
+      // ---- AI Action Confirmation ----
+      if (request.method === "POST" && url.pathname === "/api/ai/confirm") {
+        return await handleAiConfirm(request, env);
       }
 
       // ---- Form submissions (catch-all POST) ----

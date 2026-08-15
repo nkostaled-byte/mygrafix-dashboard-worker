@@ -22,23 +22,36 @@ import { AI_TOOLS, executeTool } from "../lib/ai-tools.js";
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions";
 
-const SYSTEM_PROMPT = `You are a helpful AI assistant for My Business OS, a business management platform. You help business owners understand their data by answering questions about their bookings, orders, products, services, customers, invoices, and business metrics.
+const SYSTEM_PROMPT = `You are a helpful AI assistant for My Business OS, a business management platform. You help business owners understand their data and perform business operations.
+
+CAPABILITIES:
+- Answer questions about bookings, orders, products, services, customers, invoices, and business metrics.
+- Create bookings, customers, products, services, and invoices.
+- Update booking and order statuses.
+- Cancel bookings and mark invoices as paid.
 
 IMPORTANT RULES:
 - You can only access data for the currently authenticated business.
-- You have access to read-only tools to fetch business data.
-- When a user asks a question, use the appropriate tool(s) to get the data, then summarize the findings clearly.
+- When a user asks a question, use the appropriate read-only tools to get the data, then summarize the findings clearly.
+- When a user wants to create or modify something, use the appropriate write tool. The system will present your proposal to the user for confirmation.
 - If the data is empty, say so clearly (e.g., "You don't have any bookings yet.").
 - Always be concise and professional.
 - Format numbers with commas for readability (e.g., R12,500).
 - If you need multiple pieces of information, call tools in parallel when possible.
 - Never mention internal tool names, API endpoints, or database details to the user.
-- If a question is outside your scope (e.g., personal advice, unrelated topics), politely redirect to business topics.
+- If a question is outside your scope, politely redirect to business topics.
 - When showing bookings, include the client name, service, date, time, and status.
 - When showing products, include name, price, and stock level.
 - When showing orders, include order number, customer name, amount, and status.
 - When showing invoices, include invoice number, client name, amount, and status.
 - When showing metrics, present them as a clear summary.
+
+FOR WRITE ACTIONS:
+- If the user wants to create or modify something but hasn't provided all required details, ask for the missing information before calling the write tool.
+- For example, if the user says "Book Sarah for tomorrow", ask "What service and time would you like for Sarah?"
+- Present the details of what you're about to create/modify and ask for confirmation.
+- For destructive actions (cancelling bookings), use stronger language: "You're about to cancel the booking for [name] on [date] at [time]. This cannot be automatically undone."
+- After the user confirms, the system will execute the action and you'll receive the result.
 
 Today's date context: use the current date when filtering "today", "this week", "this month" etc. The user will specify timeframes in their questions.`;
 
@@ -127,6 +140,7 @@ export async function handleAiChat(request, env) {
     // 7. If the AI wants to call tools, execute them
     if (aiMessage.tool_calls && aiMessage.tool_calls.length > 0) {
       const toolResults = [];
+      let pendingAction = null;
 
       for (const toolCall of aiMessage.tool_calls) {
         const toolName = toolCall.function.name;
@@ -141,12 +155,35 @@ export async function handleAiChat(request, env) {
 
         // Execute the tool with the server-resolved clientId
         const result = await executeTool(toolName, toolArgs, env, clientId);
-        toolResults.push({
-          tool_call_id: toolCall.id,
-          role: "tool",
-          name: toolName,
-          content: JSON.stringify(result),
-        });
+
+        // Check if this is a pending write action
+        if (result && result.status === "pending_confirmation") {
+          pendingAction = {
+            id: result.action_id,
+            type: result.action_type,
+            label: result.label,
+            destructive: result.destructive,
+            fields: result.details,
+          };
+          // Send a synthetic result back to the AI so it knows confirmation is needed
+          toolResults.push({
+            tool_call_id: toolCall.id,
+            role: "tool",
+            name: toolName,
+            content: JSON.stringify({
+              status: "pending_confirmation",
+              message: "This action requires explicit user confirmation. Present the details clearly and ask the user to confirm before proceeding. Do not execute the action yet.",
+              details: result.details,
+            }),
+          });
+        } else {
+          toolResults.push({
+            tool_call_id: toolCall.id,
+            role: "tool",
+            name: toolName,
+            content: JSON.stringify(result),
+          });
+        }
       }
 
       // 8. Send tool results back to OpenRouter for final response
@@ -185,12 +222,18 @@ export async function handleAiChat(request, env) {
         return jsonResponse({ success: false, error: "AI returned an empty response after tool execution." }, 502);
       }
 
+      const responseData = {
+        reply: followupChoice.message.content || "",
+        tools_used: toolResults.map(t => t.name),
+      };
+
+      if (pendingAction) {
+        responseData.pending_action = pendingAction;
+      }
+
       return jsonResponse({
         success: true,
-        data: {
-          reply: followupChoice.message.content || "",
-          tools_used: toolResults.map(t => t.name),
-        },
+        data: responseData,
       });
     }
 
