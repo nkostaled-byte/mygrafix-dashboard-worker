@@ -48,7 +48,7 @@ export async function handleAiConfirm(request, env) {
   const confirmed = body.confirmed !== false; // default to true if not specified
 
   // 4. Get and validate the pending action
-  const action = getPendingAction(body.action_id, clientId);
+  const action = await getPendingAction(body.action_id, clientId, env);
   if (!action) {
     return jsonResponse({
       success: false,
@@ -58,7 +58,7 @@ export async function handleAiConfirm(request, env) {
 
   // 5. If user cancelled, just mark it and return
   if (!confirmed) {
-    markActionExecuted(action.id); // prevent re-use
+    await markActionExecuted(action.id, env); // prevent re-use
     return jsonResponse({
       success: true,
       data: {
@@ -85,7 +85,7 @@ export async function handleAiConfirm(request, env) {
     }
 
     // Mark as executed to prevent duplicates
-    markActionExecuted(action.id);
+    await markActionExecuted(action.id, env);
 
     // Generate a natural-language confirmation
     const confirmationReply = generateConfirmationReply(action, result);
