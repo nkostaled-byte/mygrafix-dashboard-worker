@@ -39,6 +39,7 @@ import { handleCreateInvoice, handleSendInvoice, handleDownloadInvoicePdf } from
 import { handleExport } from "./handlers/export.js";
 import { handleLeadsRoute } from "./handlers/leads.js";
 import { handleHealth, handleDebugSupabase } from "./handlers/debug.js";
+import { handleAiChat } from "./handlers/ai.js";
 
 export default {
   async fetch(request, env) {
@@ -177,6 +178,11 @@ export default {
       // ---- Leads / CRM ----
       if (url.pathname.startsWith("/api/leads")) {
         return await handleLeadsRoute(request, env, url);
+      }
+
+      // ---- AI Chat ----
+      if (request.method === "POST" && url.pathname === "/api/ai/chat") {
+        return await handleAiChat(request, env);
       }
 
       // ---- Form submissions (catch-all POST) ----
