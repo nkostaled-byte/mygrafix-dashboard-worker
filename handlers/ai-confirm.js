@@ -17,7 +17,7 @@
 import { jsonResponse } from "../lib/responses.js";
 import { parseJsonBody, generateRequestId } from "../lib/utils.js";
 import { verifySupabaseJwt, resolveUserRole } from "../lib/auth.js";
-import { getPendingAction, executeWriteAction, markActionExecuted } from "../lib/ai-tools.js";
+import { getPendingAction, executeWriteAction, markActionExecuted, generateConfirmationReply } from "../lib/ai-tools.js";
 
 /**
  * POST /api/ai/confirm
@@ -58,11 +58,11 @@ export async function handleAiConfirm(request, env) {
 
   // 5. If user cancelled, just mark it and return
   if (!confirmed) {
-    await markActionExecuted(action.id, env); // prevent re-use
+    await markActionExecuted(action, env); // prevent re-use
     return jsonResponse({
       success: true,
       data: {
-        reply: "Action cancelled. Nothing was changed.",
+        reply: action.type === "create_booking" ? "Booking cancelled." : "Action cancelled. Nothing was changed.",
         action_type: action.type,
         status: "cancelled",
       },
@@ -85,7 +85,7 @@ export async function handleAiConfirm(request, env) {
     }
 
     // Mark as executed to prevent duplicates
-    await markActionExecuted(action.id, env);
+    await markActionExecuted(action, env);
 
     // Generate a natural-language confirmation
     const confirmationReply = generateConfirmationReply(action, result);
@@ -109,43 +109,5 @@ export async function handleAiConfirm(request, env) {
         status: "failed",
       },
     });
-  }
-}
-
-/**
- * Generate a natural-language confirmation message based on the action type and result.
- */
-function generateConfirmationReply(action, result) {
-  switch (action.type) {
-    case "create_booking": {
-      const fields = action.fields;
-      return `Done. ${fields.customer}'s ${fields.service} has been booked for ${fields.date} at ${fields.time}.`;
-    }
-    case "create_customer": {
-      return `Done. ${action.fields.name} has been added to your customers.`;
-    }
-    case "create_product": {
-      return `Done. ${action.fields.name} has been added to your products at ${action.fields.price}.`;
-    }
-    case "create_service": {
-      return `Done. ${action.fields.name} (${action.fields.duration}) has been added to your services at ${action.fields.price}.`;
-    }
-    case "create_invoice": {
-      return `Done. An invoice for ${action.fields.amount} has been created for ${action.fields.client}.`;
-    }
-    case "update_booking_status": {
-      return `Done. The booking status has been updated to "${action.fields.status}".`;
-    }
-    case "update_order_status": {
-      return `Done. The order status has been updated to "${action.fields.status}".`;
-    }
-    case "cancel_booking": {
-      return `Done. The booking has been cancelled.`;
-    }
-    case "mark_invoice_paid": {
-      return `Done. The invoice has been marked as paid.`;
-    }
-    default:
-      return `Done. The action has been completed successfully.`;
   }
 }

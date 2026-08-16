@@ -18,9 +18,82 @@
 import { jsonResponse } from "../lib/responses.js";
 import { parseJsonBody, generateRequestId } from "../lib/utils.js";
 import { verifySupabaseJwt, resolveUserRole } from "../lib/auth.js";
-import { AI_TOOLS, executeTool } from "../lib/ai-tools.js";
+import {
+  AI_TOOLS,
+  executeTool,
+  getPendingActionForClient,
+  executeWriteAction,
+  markActionExecuted,
+  generateConfirmationReply,
+} from "../lib/ai-tools.js";
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions";
+
+// Natural-language confirmations/cancellations of the pending action.
+// Matching uses word boundaries so "no" never matches "not" or "north".
+const CONFIRM_PHRASES = [
+  "yes please create it",
+  "yes please go ahead",
+  "make the booking",
+  "that's correct",
+  "that's right",
+  "that is correct",
+  "that is right",
+  "yes please",
+  "yes do it",
+  "go ahead",
+  "confirm it",
+  "create it",
+  "book it",
+  "please do",
+  "do it",
+  "proceed",
+  "confirm",
+  "yes",
+  "sure",
+  "okay",
+  "ok",
+  "yep",
+  "yeah",
+];
+
+const CANCEL_PHRASES = [
+  "don't create it",
+  "dont create it",
+  "don't book",
+  "dont book",
+  "cancel that",
+  "cancel it",
+  "never mind",
+  "nevermind",
+  "forget it",
+  "no thanks",
+  "not now",
+  "cancel",
+  "stop",
+  "no",
+  "nope",
+  "nah",
+];
+
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function matchesPhrase(message, phrase) {
+  return new RegExp(`\\b${escapeRegex(phrase)}\\b`).test(message);
+}
+
+function describePendingAction(action) {
+  const f = action.fields || {};
+  const r = action.rawFields || {};
+  return [
+    `- Customer: ${f.customer || r.customerName || ""}`,
+    `- Service: ${f.service || r.serviceName || ""}`,
+    `- Date: ${f.date || r.date || ""}`,
+    `- Time: ${f.time || r.time || ""}`,
+  ].join("\n");
+}
 
 const SYSTEM_PROMPT = `You are a helpful AI assistant for My Business OS, a business management platform. You help business owners understand their data and perform business operations.
 
@@ -75,7 +148,7 @@ Today's date context: use the current date when filtering "today", "this week", 
 
 /**
  * POST /api/ai/chat
- * Body: { message: string, conversationId?: string }
+ * Body: { message: string, history?: Array<{ role: "user"|"assistant", content: string }> }
  */
 export async function handleAiChat(request, env) {
   const requestId = generateRequestId();
@@ -113,13 +186,96 @@ export async function handleAiChat(request, env) {
     return jsonResponse({ success: false, error: "AI service is not configured. Please contact support." }, 503);
   }
 
-  // 5. Build conversation messages
-  const messages = [
-    { role: "system", content: SYSTEM_PROMPT },
-    { role: "user", content: userMessage },
-  ];
+  // 5. Check for an existing pending action BEFORE treating this message as a
+  // new request. The pending action is server-side structured state, indexed by
+  // client — never reconstructed from the AI's conversational memory.
+  const pendingAction = await getPendingActionForClient(clientId, env);
+  let pendingContext = null;
 
-  // 6. Call OpenRouter with tool calling
+  if (pendingAction) {
+    const lower = userMessage.toLowerCase();
+    const isConfirm = CONFIRM_PHRASES.some((p) => matchesPhrase(lower, p));
+    const isCancel = CANCEL_PHRASES.some((p) => matchesPhrase(lower, p));
+
+    // 5a. User confirmed the pending action — execute it directly. Never
+    // re-collect the customer/service/date/time.
+    if (isConfirm) {
+      try {
+        const result = await executeWriteAction(pendingAction, env, clientId);
+        await markActionExecuted(pendingAction, env);
+        if (result && result.error) {
+          return jsonResponse({
+            success: true,
+            data: {
+              reply: `I couldn't create the booking: ${result.error}`,
+              action_type: pendingAction.type,
+              action_id: pendingAction.id,
+              status: "failed",
+            },
+          });
+        }
+        return jsonResponse({
+          success: true,
+          data: {
+            reply: generateConfirmationReply(pendingAction, result),
+            action_type: pendingAction.type,
+            action_id: pendingAction.id,
+            status: "completed",
+          },
+        });
+      } catch (err) {
+        console.error(`[${requestId}] Pending action execution error:`, err.message);
+        await markActionExecuted(pendingAction, env);
+        return jsonResponse({
+          success: true,
+          data: {
+            reply: "An unexpected error occurred while creating the booking.",
+            action_type: pendingAction.type,
+            action_id: pendingAction.id,
+            status: "failed",
+          },
+        });
+      }
+    }
+
+    // 5b. User cancelled the pending action — clear it, create nothing.
+    if (isCancel) {
+      await markActionExecuted(pendingAction, env);
+      return jsonResponse({
+        success: true,
+        data: {
+          reply: pendingAction.type === "create_booking" ? "Booking cancelled." : "Action cancelled. Nothing was changed.",
+          action_type: pendingAction.type,
+          action_id: pendingAction.id,
+          status: "cancelled",
+        },
+      });
+    }
+
+    // 5c. Unrelated message while a booking awaits confirmation: answer it,
+    // but KEEP the pending action and never re-ask for the booking details.
+    pendingContext =
+      `A booking is currently awaiting confirmation for this user (NOT yet confirmed or cancelled):\n` +
+      describePendingAction(pendingAction) +
+      `\n\nThe user asked an unrelated question. Answer it normally. Do NOT call the create_booking tool again and do NOT ask for the customer, service, date, or time. The system handles the booking confirmation separately.`;
+  }
+
+  // 6. Build conversation messages: system prompt + optional pending-action
+  // context + recent history + the current user message.
+  const historyMessages = (body.history || [])
+    .slice(-20)
+    .map((h) => ({
+      role: h.role === "assistant" ? "assistant" : "user",
+      content: typeof h.content === "string" ? h.content : String(h.content || ""),
+    }));
+
+  const messages = [{ role: "system", content: SYSTEM_PROMPT }];
+  if (pendingContext) {
+    messages.push({ role: "system", content: pendingContext });
+  }
+  messages.push(...historyMessages, { role: "user", content: userMessage });
+
+  // 7. Call OpenRouter with tool calling
   try {
     const openrouterResponse = await fetch(OPENROUTER_BASE_URL, {
       method: "POST",
@@ -155,10 +311,10 @@ export async function handleAiChat(request, env) {
 
     const aiMessage = choice.message;
 
-    // 7. If the AI wants to call tools, execute them
+    // 8. If the AI wants to call tools, execute them
     if (aiMessage.tool_calls && aiMessage.tool_calls.length > 0) {
       const toolResults = [];
-      let pendingAction = null;
+      let toolPendingAction = null;
 
       for (const toolCall of aiMessage.tool_calls) {
         const toolName = toolCall.function.name;
@@ -176,7 +332,7 @@ export async function handleAiChat(request, env) {
 
         // Check if this is a pending write action
         if (result && result.status === "pending_confirmation") {
-          pendingAction = {
+          toolPendingAction = {
             id: result.action_id,
             type: result.action_type,
             label: result.label,
@@ -204,7 +360,7 @@ export async function handleAiChat(request, env) {
         }
       }
 
-      // 8. Send tool results back to OpenRouter for final response
+      // 9. Send tool results back to OpenRouter for final response
       const followupMessages = [
         ...messages,
         aiMessage,
@@ -245,8 +401,8 @@ export async function handleAiChat(request, env) {
         tools_used: toolResults.map(t => t.name),
       };
 
-      if (pendingAction) {
-        responseData.pending_action = pendingAction;
+      if (toolPendingAction) {
+        responseData.pending_action = toolPendingAction;
       }
 
       return jsonResponse({
@@ -255,7 +411,7 @@ export async function handleAiChat(request, env) {
       });
     }
 
-    // 9. No tool calls — return the AI's direct response
+    // 10. No tool calls — return the AI's direct response
     return jsonResponse({
       success: true,
       data: {
