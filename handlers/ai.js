@@ -25,6 +25,7 @@ import {
   executeWriteAction,
   markActionExecuted,
   generateConfirmationReply,
+  buildBookingResponse,
 } from "../lib/ai-tools.js";
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions";
@@ -129,20 +130,20 @@ When a user wants to create a booking, collect the required information and call
 6. Amount in cents (optional, defaults to service price)
 7. Notes (optional)
 
-If the user provides partial information, ask for the missing required fields. Do NOT call create_booking until all 4 required fields are available. Once all 4 required fields are available, call create_booking immediately — do not wait for the user to say "yes". The system will present confirmation buttons to the user; your final message should present the booking details and ask for confirmation.
+If the user provides partial information, ask for the missing required fields (e.g., "What service would you like?", "What date would you like?", "What time would you like?"). Do NOT call create_booking until all 4 required fields are available. Once all 4 required fields are available, call create_booking immediately — the system presents a confirmation card with the booking summary and Confirm/Cancel buttons. In your final message, briefly summarize the booking details. Do NOT ask the user to confirm in text, and never write "Shall I create this booking?", "Shall I proceed?", or similar — the confirmation buttons are the confirmation.
 
 Example flow:
 User: "Book Sarah for tomorrow"
-You: "I can help with that. What service would you like for Sarah, and what time?"
+You: "What service would you like for Sarah, and what time?"
 User: "Gentleman's Cut at 2 PM"
 You: [call create_booking tool with all 4 required fields: Sarah, Gentleman's Cut, [tomorrow's date], 14:00]
-You: "To confirm: Sarah, Gentleman's Cut, [date], 14:00. Shall I create this booking?"
+You: "I'll set this up for Sarah — Gentleman's Cut on [date] at 2:00 PM. Confirm below when you're ready."
 
 FOR WRITE ACTIONS:
 - If the user wants to create or modify something but hasn't provided all required details, ask for the missing information before calling the write tool.
-- Once all required details are available, call the write tool immediately. The system will present the confirmation buttons for the user to confirm or cancel.
+- Once all required details are available, call the write tool immediately. The system presents a confirmation card with the booking summary and Confirm/Cancel buttons. Present a brief summary of the details; never ask for confirmation in text.
 - For destructive actions (cancelling bookings), use stronger language: "You're about to cancel the booking for [name] on [date] at [time]. This cannot be automatically undone."
-- After the user confirms, the system will execute the action and you'll receive the result.
+- After the user confirms via the buttons, the system executes the action.
 
 Today's date context: use the current date when filtering "today", "this week", "this month" etc. The user will specify timeframes in their questions.`;
 
@@ -221,6 +222,8 @@ export async function handleAiChat(request, env) {
             action_type: pendingAction.type,
             action_id: pendingAction.id,
             status: "completed",
+            type: pendingAction.type === "create_booking" ? "booking_created" : `${pendingAction.type}_completed`,
+            booking: pendingAction.type === "create_booking" ? buildBookingResponse(result && result.booking) : undefined,
           },
         });
       } catch (err) {
@@ -248,6 +251,7 @@ export async function handleAiChat(request, env) {
           action_type: pendingAction.type,
           action_id: pendingAction.id,
           status: "cancelled",
+          type: pendingAction.type === "create_booking" ? "booking_cancelled" : "action_cancelled",
         },
       });
     }
@@ -346,7 +350,7 @@ export async function handleAiChat(request, env) {
             name: toolName,
             content: JSON.stringify({
               status: "pending_confirmation",
-              message: "This action requires explicit user confirmation. Present the details clearly and ask the user to confirm before proceeding. Do not execute the action yet.",
+              message: "The system will present this to the user with confirmation buttons. Present a brief summary of the details without asking the user to confirm in text — the confirmation is handled by the buttons.",
               details: result.details,
             }),
           });

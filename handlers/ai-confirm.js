@@ -17,7 +17,7 @@
 import { jsonResponse } from "../lib/responses.js";
 import { parseJsonBody, generateRequestId } from "../lib/utils.js";
 import { verifySupabaseJwt, resolveUserRole } from "../lib/auth.js";
-import { getPendingAction, executeWriteAction, markActionExecuted, generateConfirmationReply } from "../lib/ai-tools.js";
+import { getPendingAction, executeWriteAction, markActionExecuted, generateConfirmationReply, buildBookingResponse } from "../lib/ai-tools.js";
 
 /**
  * POST /api/ai/confirm
@@ -65,6 +65,7 @@ export async function handleAiConfirm(request, env) {
         reply: action.type === "create_booking" ? "Booking cancelled." : "Action cancelled. Nothing was changed.",
         action_type: action.type,
         status: "cancelled",
+        type: action.type === "create_booking" ? "booking_cancelled" : "action_cancelled",
       },
     });
   }
@@ -96,6 +97,8 @@ export async function handleAiConfirm(request, env) {
         reply: confirmationReply,
         action_type: action.type,
         status: "completed",
+        type: action.type === "create_booking" ? "booking_created" : `${action.type}_completed`,
+        booking: action.type === "create_booking" ? buildBookingResponse(result && result.booking) : undefined,
       },
     });
 
