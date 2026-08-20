@@ -41,6 +41,12 @@ import { handleLeadsRoute } from "./handlers/leads.js";
 import { handleHealth, handleDebugSupabase } from "./handlers/debug.js";
 import { handleAiChat } from "./handlers/ai.js";
 import { handleAiConfirm } from "./handlers/ai-confirm.js";
+import {
+  handleListNotifications,
+  handleMarkNotificationRead,
+  handleMarkAllNotificationsRead,
+  handleDeleteNotification,
+} from "./handlers/notifications.js";
 
 export default {
   async fetch(request, env) {
@@ -174,6 +180,24 @@ export default {
 
       if (request.method === "POST" && url.pathname === "/api/paystack/webhook") {
         return await handlePaystackWebhook(request, env);
+      }
+
+      // ---- Notifications ----
+      if (url.pathname === "/api/notifications" && request.method === "GET") {
+        return await handleListNotifications(request, env);
+      }
+      if (url.pathname === "/api/notifications" && request.method === "PATCH") {
+        return await handleMarkAllNotificationsRead(request, env);
+      }
+      const notifIdMatch = url.pathname.match(/^\/api\/notifications\/([0-9a-fA-F-]+)$/);
+      if (notifIdMatch) {
+        const [, notifId] = notifIdMatch;
+        if (request.method === "PATCH") {
+          return await handleMarkNotificationRead(request, env, notifId);
+        }
+        if (request.method === "DELETE") {
+          return await handleDeleteNotification(request, env, notifId);
+        }
       }
 
       // ---- Leads / CRM ----
