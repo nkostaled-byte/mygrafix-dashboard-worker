@@ -120,8 +120,8 @@ IMPORTANT RULES:
 - When showing invoices, include invoice number, client name, amount, and status.
 - When showing metrics, present them as a clear summary.
 
-BOOKING WORKFLOW:
-When a user wants to create a booking, collect the required information and call the create_booking tool as soon as ALL required fields are available:
+BOOKING WORKFLOW — CRITICAL RULES:
+When a user wants to create a booking, you MUST extract ALL information from their original message. The required fields are:
 1. Customer name (required)
 2. Service name (required)
 3. Date in YYYY-MM-DD format (required)
@@ -130,22 +130,45 @@ When a user wants to create a booking, collect the required information and call
 6. Amount in cents (optional, defaults to service price)
 7. Notes (optional)
 
-If the user provides partial information, ask for the missing required fields (e.g., "What service would you like?", "What date would you like?", "What time would you like?"). Do NOT call create_booking until all 4 required fields are available. Once all 4 required fields are available, call create_booking immediately — the system presents a confirmation card with the booking summary and Confirm/Cancel buttons. In your final message, briefly summarize the booking details. Do NOT ask the user to confirm in text, and never write "Shall I create this booking?", "Shall I proceed?", or similar — the confirmation buttons are the confirmation.
+STEP 1 — EXTRACT: Parse the user's message carefully. Every piece of information they provide MUST be preserved. For example, "Create a booking for Nathi on the 20th of August 2026 at 10am for a Gentleman's Cut" contains ALL four required fields: customer=Nathi, service=Gentleman's Cut, date=2026-08-20, time=10:00.
 
-Example flow:
-User: "Book Sarah for tomorrow"
-You: "What service would you like for Sarah, and what time?"
-User: "Gentleman's Cut at 2 PM"
-You: [call create_booking tool with all 4 required fields: Sarah, Gentleman's Cut, [tomorrow's date], 14:00]
-You: "I'll set this up for Sarah — Gentleman's Cut on [date] at 2:00 PM. Confirm below when you're ready."
+STEP 2 — CHECK MISSING: If ANY required field is missing, ask ONLY for the missing field(s). Never ask for a field the user already provided. For example, if the user says "Book Nathi for a Gentleman's Cut on August 20", only ask "What time would you like?" — do NOT ask for the customer name, service, or date again.
+
+STEP 3 — CALL TOOL: As soon as all 4 required fields are available, call create_booking immediately. Do NOT ask "Shall I create this booking?" or "Would you like me to proceed?" or "Confirm below when you're ready." The system automatically shows a confirmation card with Confirm/Cancel buttons.
+
+STEP 4 — AFTER TOOL CALL: After calling create_booking, your reply must be EMPTY or a single short sentence like "Ready to book." Do NOT summarize the details again. Do NOT say "Confirm below". Do NOT ask the user to type anything. The confirmation card handles everything.
+
+FORBIDDEN PHRASES — Never write any of these:
+- "Shall I create this booking?"
+- "Would you like me to proceed?"
+- "Please confirm the time."
+- "Confirm below when you're ready."
+- "Type confirm to continue."
+- "I'll set this up for [name]... Confirm below when you're ready."
+- Any variation of asking the user to confirm in text.
+
+Example flows:
+
+FULL INFO — show confirmation card immediately:
+User: "Create a booking for Nathi on the 20th of August 2026 at 10am for a Gentleman's Cut."
+You: [call create_booking with customerName="Nathi", serviceName="Gentleman's Cut", date="2026-08-20", time="10:00"]
+You: "" (empty reply — the confirmation card appears automatically)
+
+MISSING ONE FIELD — ask only for that field:
+User: "Book Nathi for a Gentleman's Cut on August 20."
+You: "What time would you like?"
+User: "10am"
+You: [call create_booking with customerName="Nathi", serviceName="Gentleman's Cut", date="2026-08-20", time="10:00"]
+You: "" (empty reply — the confirmation card appears automatically)
 
 FOR WRITE ACTIONS:
-- If the user wants to create or modify something but hasn't provided all required details, ask for the missing information before calling the write tool.
-- Once all required details are available, call the write tool immediately. The system presents a confirmation card with the booking summary and Confirm/Cancel buttons. Present a brief summary of the details; never ask for confirmation in text.
+- If the user wants to create or modify something but hasn't provided all required details, ask ONLY for the missing information.
+- Once all required details are available, call the write tool immediately. The system presents a confirmation card with Confirm/Cancel buttons.
+- After calling the write tool, output an empty reply or a single short neutral sentence. Never ask for confirmation in text.
 - For destructive actions (cancelling bookings), use stronger language: "You're about to cancel the booking for [name] on [date] at [time]. This cannot be automatically undone."
 - After the user confirms via the buttons, the system executes the action.
 
-Today's date context: use the current date when filtering "today", "this week", "this month" etc. The user will specify timeframes in their questions.`;
+Today's date is injected dynamically at the end of this prompt. Use it when resolving relative dates like "today", "tomorrow", "this week", "next Monday" etc.`;
 
 /**
  * POST /api/ai/chat
@@ -273,7 +296,13 @@ export async function handleAiChat(request, env) {
       content: typeof h.content === "string" ? h.content : String(h.content || ""),
     }));
 
-  const messages = [{ role: "system", content: SYSTEM_PROMPT }];
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, "0")}-${String(tomorrow.getDate()).padStart(2, "0")}`;
+
+  const messages = [{ role: "system", content: `${SYSTEM_PROMPT}\n\nToday is ${todayStr}. Tomorrow is ${tomorrowStr}. Use these dates when the user says "today" or "tomorrow".` }];
   if (pendingContext) {
     messages.push({ role: "system", content: pendingContext });
   }
@@ -350,7 +379,7 @@ export async function handleAiChat(request, env) {
             name: toolName,
             content: JSON.stringify({
               status: "pending_confirmation",
-              message: "The system will present this to the user with confirmation buttons. Present a brief summary of the details without asking the user to confirm in text — the confirmation is handled by the buttons.",
+              message: "The system will automatically display a confirmation card with Confirm/Cancel buttons. Your reply to the user must be EMPTY or a single short neutral sentence like 'Ready to book.' Do NOT summarize the booking details again. Do NOT say 'Confirm below'. Do NOT ask the user to type 'confirm'. The buttons are the only confirmation mechanism.",
               details: result.details,
             }),
           });
@@ -400,8 +429,31 @@ export async function handleAiChat(request, env) {
         return jsonResponse({ success: false, error: "AI returned an empty response after tool execution." }, 502);
       }
 
+      let replyText = followupChoice.message.content || "";
+
+      if (toolPendingAction) {
+        const forbiddenPatterns = [
+          /confirm below/i,
+          /shall i (create|proceed|book|set this up)/i,
+          /would you like me to (proceed|create|book)/i,
+          /please confirm/i,
+          /type confirm/i,
+          /when you'?re ready/i,
+          /ready to (go|proceed|confirm)/i,
+          /let me know if you'?d like/i,
+          /does (that|this) (look )?(correct|right|good)/i,
+          /is (that|this) (correct|right)/i,
+        ];
+        for (const pattern of forbiddenPatterns) {
+          if (pattern.test(replyText)) {
+            replyText = "";
+            break;
+          }
+        }
+      }
+
       const responseData = {
-        reply: followupChoice.message.content || "",
+        reply: replyText,
         tools_used: toolResults.map(t => t.name),
       };
 
