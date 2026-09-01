@@ -3,6 +3,10 @@
   "main": "worker.js",
   "compatibility_date": "2026-07-18",
 
+  "ai": {
+    "binding": "AI"
+  },
+
   // R2 bucket for uploaded files (logos, profile pics, product images)
   // and generated invoice PDFs. Create the bucket first with:
   //   wrangler r2 bucket create my-grafix-uploads

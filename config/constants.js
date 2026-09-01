@@ -28,6 +28,8 @@ export const VALID_STATUSES = ["received", "pending", "confirmed", "cancelled", 
 
 export const IP_RATE_LIMIT = { max: 20, windowSeconds: 60 };
 export const CLIENT_RATE_LIMIT = { max: 60, windowSeconds: 60 };
+export const AI_PRODUCT_IMAGE_RATE_LIMIT = { max: 10, windowSeconds: 60 };
+export const DEFAULT_AI_PRODUCT_IMAGE_LIMIT = 20;
 
 // ==================================================
 // UPLOADS

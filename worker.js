@@ -41,6 +41,7 @@ import { handleLeadsRoute } from "./handlers/leads.js";
 import { handleHealth, handleDebugSupabase } from "./handlers/debug.js";
 import { handleAiChat } from "./handlers/ai.js";
 import { handleAiConfirm } from "./handlers/ai-confirm.js";
+import { handleGenerateProductImage, handleSaveProductImage } from "./handlers/product-image-ai.js";
 import {
   handleListNotifications,
   handleMarkNotificationRead,
@@ -215,6 +216,14 @@ export default {
         return await handleAiConfirm(request, env);
       }
 
+      // ---- AI Product Images ----
+      if (request.method === "POST" && url.pathname === "/api/ai/generate-product-image") {
+        return await handleGenerateProductImage(request, env);
+      }
+      if (request.method === "POST" && url.pathname === "/api/ai/save-product-image") {
+        return await handleSaveProductImage(request, env);
+      }
+
       // ---- Form submissions (catch-all POST) ----
       if (request.method === "POST") {
         return await handleSubmission(request, env);
@@ -234,4 +243,3 @@ export default {
     }
   },
 };
-
