@@ -253,8 +253,9 @@ function computePriority(score) {
  * @param {object} audit
  * @param {object} scoreResult from buildScoreSummary
  * @param {string} businessName
+ * @param {string} [agencyName] - the authenticated client's business_name
  */
-export function buildAiBrief(audit, scoreResult, businessName) {
+export function buildAiBrief(audit, scoreResult, businessName, agencyName) {
   const name = businessName || audit?.businessName || audit?.domain || "your business";
   const whatIsWrong = (scoreResult.reasoning || []).slice(0, 4);
   const improvements = (scoreResult.deductions || []).map((d) => `Add ${d.label.toLowerCase() ? "a" : ""} ${d.label} / ${d.note}`).concat(
@@ -266,11 +267,11 @@ export function buildAiBrief(audit, scoreResult, businessName) {
 
   const problemSentence =
     whatIsWrong.length
-      ? `Right now your website ${whatIsWrong[0].toLowerCase()}${whatIsWrong.length > 1 ? ", and more" : "."}`
-      : "your website is in strong shape and just needs ongoing polish.";
+      ? `Right now the audit flagged: ${whatIsWrong.map((s) => String(s).replace(/\.+$/, "")).join("; ")}.`
+      : "The audit shows your website is in strong shape and just needs ongoing polish.";
 
   const salesMessage = [
-    `Hi there 👋 — My Grafix Media recently reviewed the website for ${name}.`,
+    `Hi there 👋 — ${agencyName || "My Grafix Media"} recently reviewed the website for ${name}.`,
     problemSentence,
     `We can fix this with ${serviceLine}, built around your goals and budget.`,
     `Would you like a free, no-obligation proposal & free website audit report? Just reply and we'll send it over.`,

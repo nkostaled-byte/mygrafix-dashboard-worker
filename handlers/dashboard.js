@@ -171,7 +171,7 @@ const KNOWN_COLUMNS = {
   invoices: ["client_id", "customer_id", "order_id", "invoice_number", "status", "subtotal", "tax", "total", "issued_at", "due_at", "pdf_url"],
   staff: ["client_id", "name", "role", "email", "phone", "specialties", "photo_url", "active"],
   submissions: ["submission_id", "client_id", "form_name", "customer_name", "customer_email", "submission_json", "status", "ip_address", "user_agent"],
-  gallery: ["client_id", "title", "before_url", "after_url", "barber_name"],
+  gallery: ["client_id", "caption", "image_url"],
   reviews: ["client_id", "name", "rating", "text", "service", "avatar"],
   team_members: ["client_id", "auth_user_id", "name", "email", "role", "active"],
   clients: ["client_id", "auth_user_id", "business_name", "owner_email", "reply_email", "active", "logo_url", "primary_color", "secondary_color", "hero_title", "hero_subtitle", "phone", "address", "opening_hours", "business_type", "claim_code", "bank_name", "bank_account_name", "bank_account_number", "bank_branch_code", "payment_instructions"],

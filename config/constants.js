@@ -45,7 +45,7 @@ export const EXTENSION_BY_TYPE = {
 };
 
 export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024; // 5MB
-export const ALLOWED_UPLOAD_FOLDERS = ["logos", "profile", "products"];
+export const ALLOWED_UPLOAD_FOLDERS = ["logos", "profile", "products", "gallery"];
 
 // ==================================================
 // FORM COPY (email templates per form type)

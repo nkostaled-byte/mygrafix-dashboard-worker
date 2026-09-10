@@ -19,6 +19,7 @@ import { loadClient } from "../services/clientService.js";
 import { canAccessPlan, planAccessDenied } from "../lib/planAccess.js";
 import { fetchSiteHtml, analyseSite, getDomain } from "../lib/siteScanner.js";
 import { scoreAudit, buildAiBrief, DEFAULT_STAGES, ALLOWED_STATUSES, ALLOWED_PRIORITIES } from "../services/leadsCore.js";
+import { generateAuditReportPdf } from "../lib/pdf.js";
 import { searchPlaces } from "../lib/places.js";
 
 const MIN_PLAN_CRM = "starter";
@@ -826,8 +827,52 @@ async function handleAudit(req, env) {
   const fetched = await fetchSiteHtml(env, payload.url);
   const audit = analyseSite(fetched, payload.url);
   const score = scoreAudit(audit);
-  const ai = buildAiBrief(audit, score, payload.businessName || audit.businessName);
+  const ai = buildAiBrief(audit, score, payload.businessName || audit.businessName, ctx.client?.business_name);
   return jsonResponse({ success: true, data: { audit, score, ai } });
+}
+
+async function handleAuditReport(req, env) {
+  const ctx = await resolveClient(req, env, MIN_PLAN_ADVANCED);
+  if (ctx.error) return ctx.error;
+
+  const params = new URL(req.url).searchParams;
+  const target = params.get("url");
+  if (!target) return jsonResponse({ success: false, error: "A website 'url' is required." }, 400);
+
+  const fetched = await fetchSiteHtml(env, target);
+  const audit = analyseSite(fetched, target);
+  const score = scoreAudit(audit);
+  const ai = buildAiBrief(audit, score, params.get("businessName") || audit.businessName, ctx.client?.business_name);
+
+  const pdfBytes = await generateAuditReportPdf(ctx.client, {
+    businessName: params.get("businessName") || audit.businessName || audit.domain || target,
+    url: target,
+    domain: audit.domain,
+    score: score.score,
+    opportunityLevel: score.opportunityLevel,
+    priority: score.priority,
+    deductions: score.deductions,
+    recommendedServices: (score.recommendedServices || []).map((s) => (typeof s === "string" ? s : s.name || "")),
+    salesMessage: ai.salesMessage,
+    emails: audit.emails,
+    phones: audit.phones,
+    address: audit.address,
+    date: new Date().toISOString(),
+  });
+
+  const safeName = String(params.get("businessName") || audit.businessName || audit.domain || "lead")
+    .replace(/[^a-z0-9]+/gi, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase() || "lead";
+
+  return new Response(pdfBytes, {
+    headers: {
+      ...CORS_HEADERS,
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `attachment; filename="audit-report-${safeName}.pdf"`,
+      "Cache-Control": "no-store",
+    },
+  });
 }
 
 async function handleBusinessSearch(req, env) {
@@ -985,6 +1030,7 @@ export async function handleLeadsRoute(req, env, url) {
   if (path === "/api/leads/search" && method === "POST") return await handleBusinessSearch(req, env);
   if (path === "/api/leads/scan" && method === "POST") return await handleScan(req, env);
   if (path === "/api/leads/audit" && method === "POST") return await handleAudit(req, env);
+if (path === "/api/leads/audit/report" && method === "GET") return await handleAuditReport(req, env);
   if (path === "/api/leads/find-businesses" && method === "GET") return await handleFindBusinesses(req, env);
   if (path === "/api/leads/bulk" && method === "POST") return await handleBulk(req, env);
   if (path === "/api/leads" && method === "GET") {
