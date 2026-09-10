@@ -123,7 +123,7 @@ async function mayaTokenMatches(token, secret) {
  * Returns { mayaClientId } | { claims } | null. null means HTTP 401;
  * { claims } without a resolvable client means HTTP 403 (kept separate from 401).
  */
-async function authorizeImageGeneration(request, env) {
+export async function authorizeImageGeneration(request, env) {
   const authHeader = request.headers.get("Authorization") || "";
   const token = authHeader.replace(/^Bearer\s+/i, "").trim();
 

@@ -42,6 +42,7 @@ import { handleHealth, handleDebugSupabase } from "./handlers/debug.js";
 import { handleAiChat } from "./handlers/ai.js";
 import { handleAiConfirm } from "./handlers/ai-confirm.js";
 import { handleGenerateProductImage, handleSaveProductImage } from "./handlers/product-image-ai.js";
+import { handleUploadSocialImage } from "./handlers/social-image-upload.js";
 import {
   handleListNotifications,
   handleMarkNotificationRead,
@@ -222,6 +223,11 @@ export default {
       }
       if (request.method === "POST" && url.pathname === "/api/ai/save-product-image") {
         return await handleSaveProductImage(request, env);
+      }
+
+      // ---- Maya Social Image Upload ----
+      if (request.method === "POST" && url.pathname === "/api/ai/upload-social-image") {
+        return await handleUploadSocialImage(request, env);
       }
 
       // ---- Form submissions (catch-all POST) ----
